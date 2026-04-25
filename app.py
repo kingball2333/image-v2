@@ -43,7 +43,7 @@ with tab1:
                 try:
                     # 强烈建议加上 timeout，防止网络卡死
                     response = requests.post(f"{API_BASE}/images/generations", json=payload, headers=HEADERS,
-                                             timeout=60)
+                                             timeout=360)
 
                     # 【优化】更优雅的错误处理，直接显示官方返回的错误内容
                     if not response.ok:
@@ -111,7 +111,7 @@ with tab2:
                     ]
                 }
                 try:
-                    res = requests.post(f"{API_BASE}/chat/completions", json=payload, headers=HEADERS, timeout=60)
+                    res = requests.post(f"{API_BASE}/chat/completions", json=payload, headers=HEADERS, timeout=360)
 
                     if not res.ok:
                         st.error(f"❌ 重绘失败！状态码: {res.status_code}\n\n服务器返回: {res.text}")
