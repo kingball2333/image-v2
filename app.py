@@ -5,11 +5,16 @@ import time  # 【新增】引入时间模块用于计算耗时
 
 API_BASE = "https://right.codes/gpt/v1"
 
-try:
-    API_KEY = st.secrets["MY_API_KEY"]
-except KeyError:
-    st.error("未找到 API Key，请在 Streamlit Secrets 或本地 .streamlit/secrets.toml 中配置 MY_API_KEY")
-    st.stop()
+import os
+
+# 【修改点】：双保险读取 Key。先尝试 Zeabur 的方式，如果不行再尝试 Streamlit 的方式
+API_KEY = os.environ.get("MY_API_KEY")
+if not API_KEY:
+    try:
+        API_KEY = st.secrets["MY_API_KEY"]
+    except KeyError:
+        st.error("未找到 API Key，请配置环境变量 MY_API_KEY")
+        st.stop()
 
 HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
@@ -23,7 +28,7 @@ tab1, tab2 = st.tabs(["📝 文字生图", "🖼️ 图片重绘"])
 
 with tab1:
     # 优化了默认文字，使用 placeholder 提示用户
-    prompt = st.text_area("请输入画面描述：", placeholder="例如：画一个带着墨镜的猫咪在赛博朋克城市喝咖啡", value="")
+    prompt = st.text_area("请输入画面描述：", placeholder="例如：画一个小鸡", value="")
 
     if st.button("生成图片", type="primary"):
         if not prompt.strip():
