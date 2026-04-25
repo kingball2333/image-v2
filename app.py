@@ -3,7 +3,7 @@ import requests
 import base64
 
 # 【修改点 1】：配置你的接口地址（这里直接写死没关系，只要不暴露 Key 就行）
-API_BASE = "https://你的接口域名/gpt/v1"
+API_BASE = "https://right.codes/gpt/v1"
 
 # 【修改点 2】：通过 Streamlit 的秘密环境变量读取 Key，而不是直接写在代码里
 try:
