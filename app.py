@@ -18,13 +18,13 @@ HEADERS = {
 }
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手")
+st.title("🎨 AI 绘图助手 BY ljj")
 
 # 使用标签页区分“文生图”和“图生图”
 tab1, tab2 = st.tabs(["📝 文字生图", "🖼️ 图片重绘"])
 
 with tab1:
-    prompt = st.text_area("请输入画面描述：", "画一个Sam在抖音直播间带货 Right Code 的图片")
+    prompt = st.text_area("请输入画面描述：", "请输入")
     if st.button("生成图片", type="primary"):
         with st.spinner("AI 正在疯狂作画中，请稍候..."):
             payload = {
