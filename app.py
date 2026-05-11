@@ -4,7 +4,6 @@ import base64
 import time  # 【新增】引入时间模块用于计算耗时
 
 API_BASE = "https://www.right.codes/draw/v1"
-IMAGE_SIZE = "1024x1024"
 
 import os
 
@@ -57,10 +56,9 @@ with tab1:
             with st.spinner("AI 正在疯狂作画中，请稍候..."):
                 start_time = time.time()  # 记录开始时间
                 payload = {
-                    "model": "gpt-image-2",
+                    "model": "gpt-image-2-vip",
                     "prompt": prompt,
                     "image": [],
-                    "size": IMAGE_SIZE,
                     "response_format": "url"
                 }
                 try:
@@ -122,10 +120,9 @@ with tab2:
                 image_url = f"data:{uploaded_file.type};base64,{base64_image}"
 
                 payload = {
-                    "model": "gpt-image-2",
+                    "model": "gpt-image-2-vip",
                     "prompt": edit_prompt,
                     "image": [image_url],
-                    "size": IMAGE_SIZE,
                     "response_format": "url"
                 }
                 try:
