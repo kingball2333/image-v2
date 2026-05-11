@@ -2,8 +2,15 @@ import streamlit as st
 import requests
 import base64
 import time  # 【新增】引入时间模块用于计算耗时
+from PIL import Image
 
 API_BASE = "https://www.right.codes/draw/v1"
+SIZE_OPTIONS = {
+    "自动默认": None,
+    "方图 1:1": "1024x1024",
+    "竖版海报 9:16": "1024x1792",
+    "横版封面 16:9": "1792x1024",
+}
 
 import os
 
@@ -41,7 +48,9 @@ def fetch_image_bytes(image_data):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 BY ljj（5-11-3）")
+st.title("🎨 AI 绘图助手 BY ljj（5-11-4）")
+size_choice = st.sidebar.selectbox("图片尺寸", list(SIZE_OPTIONS.keys()), index=0)
+st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图使用参考图原始尺寸。")
 
 tab1, tab2 = st.tabs(["📝 文字生图", "🖼️ 图片重绘"])
 
@@ -55,10 +64,12 @@ with tab1:
         else:
             with st.spinner("AI 正在疯狂作画中，请稍候..."):
                 start_time = time.time()  # 记录开始时间
+                image_size = SIZE_OPTIONS[size_choice] or "1024x1024"
                 payload = {
                     "model": "gpt-image-2-vip",
                     "prompt": prompt,
                     "image": [],
+                    "size": image_size,
                     "response_format": "url"
                 }
                 try:
@@ -89,7 +100,7 @@ with tab1:
                     image_bytes = fetch_image_bytes(image_data)
 
                     # 【优化】显示成功提示、耗时和优化的提示词
-                    st.success(f"🎉 生成成功！共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 生成成功！尺寸 {image_size}，共耗时 {elapsed_time} 秒")
                     with st.expander("💡 查看 AI 优化后的提示词 (点击展开)", expanded=True):
                         st.info(revised_prompt)
 
@@ -116,13 +127,19 @@ with tab2:
         else:
             with st.spinner("AI 正在重绘..."):
                 start_time = time.time()
+                uploaded_file.seek(0)
+                reference_image = Image.open(uploaded_file)
+                reference_width, reference_height = reference_image.size
+                uploaded_file.seek(0)
                 base64_image = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
                 image_url = f"data:{uploaded_file.type};base64,{base64_image}"
+                image_size = SIZE_OPTIONS[size_choice] or f"{reference_width}x{reference_height}"
 
                 payload = {
                     "model": "gpt-image-2-vip",
                     "prompt": edit_prompt,
                     "image": [image_url],
+                    "size": image_size,
                     "response_format": "url"
                 }
                 try:
@@ -140,7 +157,7 @@ with tab2:
                     image_data = res_data["data"][0]
                     img_bytes = fetch_image_bytes(image_data)
 
-                    st.success(f"🎉 重绘成功！共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 重绘成功！尺寸 {image_size}，共耗时 {elapsed_time} 秒")
                     st.image(img_bytes, use_column_width=True)
                     st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
                                        file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
