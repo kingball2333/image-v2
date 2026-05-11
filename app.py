@@ -17,7 +17,7 @@ SIZE_OPTIONS = {
     "横版 1536x1024": "1536x1024",
     "2K 方形 2048x2048": "2048x2048",
     "2K 横版 2048x1152": "2048x1152",
-    "长海报 1024x3072": "1024x3072",
+    "长海报 724x2172": "724x2172",
 }
 
 import os
@@ -35,6 +35,27 @@ HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json"
 }
+
+
+def format_error_message(response):
+    if response.status_code == 524:
+        return (
+            "请求在中转站超时了（Cloudflare 524）。通常是图片任务处理时间太长，"
+            "建议换小一点的尺寸、压缩参考图，或稍后重试。"
+        )
+
+    content_type = response.headers.get("Content-Type", "")
+    if "application/json" in content_type:
+        try:
+            return response.json()
+        except ValueError:
+            pass
+
+    text = response.text.strip()
+    if text.lower().startswith("<!doctype html") or text.lower().startswith("<html"):
+        return "服务器返回了 HTML 错误页，请稍后重试或检查中转站状态。"
+
+    return text
 
 
 def fetch_image_bytes(image_data):
@@ -62,10 +83,25 @@ def parse_size(size):
 
 def normalize_reference_size(width, height):
     """把参考图尺寸修正到 GPT Image 2 支持的范围内，并尽量保持原比例和像素量。"""
+    target_ratio = width / height
+
+    if target_ratio <= 1 / 2:
+        return "1024x3072"
+    if target_ratio < 1:
+        return "1024x1536"
+    if target_ratio >= 2:
+        return "3072x1024"
+    if target_ratio > 1:
+        return "1536x1024"
+
+    return "1024x1024"
+
+
+def normalize_reference_size_precise(width, height):
+    """保留精细尺寸算法，后续需要更贴近参考图比例时可以切换使用。"""
     original_area = width * height
     target_area = min(max(original_area, MIN_PIXELS), MAX_PIXELS)
-    target_ratio = width / height
-    target_ratio = min(max(target_ratio, 1 / MAX_RATIO), MAX_RATIO)
+    target_ratio = min(max(width / height, 1 / MAX_RATIO), MAX_RATIO)
 
     best_size = None
     best_score = None
@@ -100,7 +136,7 @@ def is_experimental_size(size):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 BY ljj（5-11-5）")
+st.title("🎨 AI 绘图助手 BY ljj（5-11-6）")
 size_choice = st.sidebar.selectbox("图片尺寸", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 
@@ -133,12 +169,7 @@ with tab1:
 
                     # 【优化】更优雅的错误处理，直接显示官方返回的错误内容
                     if not response.ok:
-                        err_msg = response.text
-                        try:
-                            # 尝试解析成更容易阅读的 JSON
-                            err_msg = response.json()
-                        except:
-                            pass
+                        err_msg = format_error_message(response)
                         st.error(f"❌ 生成失败！状态码: {response.status_code}\n\n服务器返回信息:\n{err_msg}")
                         st.stop()  # 终止后续代码执行
 
@@ -202,7 +233,8 @@ with tab2:
                     res = requests.post(f"{API_BASE}/images/generations", json=payload, headers=HEADERS, timeout=360)
 
                     if not res.ok:
-                        st.error(f"❌ 重绘失败！状态码: {res.status_code}\n\n服务器返回: {res.text}")
+                        err_msg = format_error_message(res)
+                        st.error(f"❌ 重绘失败！状态码: {res.status_code}\n\n服务器返回: {err_msg}")
                         st.stop()
 
                     res_data = res.json()
