@@ -3,7 +3,8 @@ import requests
 import base64
 import time  # 【新增】引入时间模块用于计算耗时
 
-API_BASE = "https://right.codes/gpt/v1"
+API_BASE = "https://www.right.codes/draw/v1"
+IMAGE_SIZE = "1024x1024"
 
 import os
 
@@ -20,6 +21,25 @@ HEADERS = {
     "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json"
 }
+
+
+def fetch_image_bytes(image_data):
+    """兼容 OpenAI 图片接口常见的 b64_json 和 url 两种返回格式。"""
+    b64_str = image_data.get("b64_json")
+    if b64_str:
+        return base64.b64decode(b64_str)
+
+    image_url = image_data.get("url")
+    if not image_url:
+        raise ValueError("返回数据中没有找到 b64_json 或 url")
+
+    if image_url.startswith("data:image"):
+        return base64.b64decode(image_url.split(",", 1)[1])
+
+    img_response = requests.get(image_url, timeout=120)
+    img_response.raise_for_status()
+    return img_response.content
+
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
 st.title("🎨 AI 绘图助手 BY ljj")
@@ -38,7 +58,10 @@ with tab1:
                 start_time = time.time()  # 记录开始时间
                 payload = {
                     "model": "gpt-image-2",
-                    "prompt": prompt
+                    "prompt": prompt,
+                    "image": [],
+                    "size": IMAGE_SIZE,
+                    "response_format": "url"
                 }
                 try:
                     # 强烈建议加上 timeout，防止网络卡死
@@ -63,9 +86,9 @@ with tab1:
                     elapsed_time = round(end_time - start_time, 2)
 
                     # 提取数据
-                    b64_str = res_data["data"][0]["b64_json"]
-                    revised_prompt = res_data["data"][0].get("revised_prompt", "原样回显（模型未优化）")
-                    image_bytes = base64.b64decode(b64_str)
+                    image_data = res_data["data"][0]
+                    revised_prompt = image_data.get("revised_prompt", "原样回显（模型未优化）")
+                    image_bytes = fetch_image_bytes(image_data)
 
                     # 【优化】显示成功提示、耗时和优化的提示词
                     st.success(f"🎉 生成成功！共耗时 {elapsed_time} 秒")
@@ -96,22 +119,17 @@ with tab2:
             with st.spinner("AI 正在重绘..."):
                 start_time = time.time()
                 base64_image = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-                image_url = f"data:image/png;base64,{base64_image}"
+                image_url = f"data:{uploaded_file.type};base64,{base64_image}"
 
                 payload = {
                     "model": "gpt-image-2",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": edit_prompt},
-                                {"type": "image_url", "image_url": {"url": image_url}}
-                            ]
-                        }
-                    ]
+                    "prompt": edit_prompt,
+                    "image": [image_url],
+                    "size": IMAGE_SIZE,
+                    "response_format": "url"
                 }
                 try:
-                    res = requests.post(f"{API_BASE}/chat/completions", json=payload, headers=HEADERS, timeout=360)
+                    res = requests.post(f"{API_BASE}/images/generations", json=payload, headers=HEADERS, timeout=360)
 
                     if not res.ok:
                         st.error(f"❌ 重绘失败！状态码: {res.status_code}\n\n服务器返回: {res.text}")
@@ -122,19 +140,13 @@ with tab2:
                     end_time = time.time()
                     elapsed_time = round(end_time - start_time, 2)
 
-                    content = res_data["choices"][0]["message"]["content"]
+                    image_data = res_data["data"][0]
+                    img_bytes = fetch_image_bytes(image_data)
 
-                    if "data:image" in content:
-                        img_base64 = content.split("base64,")[1].split(")")[0]
-                        img_bytes = base64.b64decode(img_base64)
-
-                        st.success(f"🎉 重绘成功！共耗时 {elapsed_time} 秒")
-                        st.image(img_bytes, use_column_width=True)
-                        st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
-                                           file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
-                    else:
-                        st.warning("⚠️ 接口调用成功，但未能在返回值中找到图片数据。原始返回：")
-                        st.write(content)
+                    st.success(f"🎉 重绘成功！共耗时 {elapsed_time} 秒")
+                    st.image(img_bytes, use_column_width=True)
+                    st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
+                                       file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
 
                 except requests.exceptions.Timeout:
                     st.error("❌ 请求超时！图片处理较慢，请重试。")
