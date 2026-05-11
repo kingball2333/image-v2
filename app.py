@@ -41,7 +41,7 @@ def fetch_image_bytes(image_data):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 BY ljj")
+st.title("🎨 AI 绘图助手 BY ljj（5-11-3）")
 
 tab1, tab2 = st.tabs(["📝 文字生图", "🖼️ 图片重绘"])
 
