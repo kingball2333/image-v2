@@ -17,7 +17,7 @@ SIZE_OPTIONS = {
     "横版 1536x1024": "1536x1024",
     "2K 方形 2048x2048": "2048x2048",
     "2K 横版 2048x1152": "2048x1152",
-    "长海报 724x2172": "724x2172",
+    "长海报 720x2160": "720x2160",
 }
 
 import os
@@ -81,12 +81,29 @@ def parse_size(size):
     return int(width), int(height)
 
 
+def validate_image_size(size):
+    width, height = parse_size(size)
+    pixels = width * height
+    ratio = max(width, height) / min(width, height)
+
+    if width % 16 != 0 or height % 16 != 0:
+        return "图片宽高都必须是 16 的倍数。"
+    if max(width, height) > MAX_EDGE:
+        return f"图片最大边不能超过 {MAX_EDGE}px。"
+    if ratio > MAX_RATIO:
+        return f"图片长边:短边不能超过 {MAX_RATIO}:1。"
+    if pixels < MIN_PIXELS or pixels > MAX_PIXELS:
+        return f"图片总像素数必须在 {MIN_PIXELS:,} 到 {MAX_PIXELS:,} 之间。"
+
+    return None
+
+
 def normalize_reference_size(width, height):
     """把参考图尺寸修正到 GPT Image 2 支持的范围内，并尽量保持原比例和像素量。"""
     target_ratio = width / height
 
     if target_ratio <= 1 / 2:
-        return "1024x3072"
+        return "720x2160"
     if target_ratio < 1:
         return "1024x1536"
     if target_ratio >= 2:
@@ -136,7 +153,7 @@ def is_experimental_size(size):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 BY ljj（5-11-6）")
+st.title("🎨 AI 绘图助手 BY ljj（5-11-7）")
 size_choice = st.sidebar.selectbox("图片尺寸", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 
@@ -153,6 +170,10 @@ with tab1:
             with st.spinner("AI 正在疯狂作画中，请稍候..."):
                 start_time = time.time()  # 记录开始时间
                 image_size = SIZE_OPTIONS[size_choice] or "1024x1024"
+                size_error = validate_image_size(image_size)
+                if size_error:
+                    st.error(f"当前尺寸 {image_size} 不符合模型要求：{size_error}")
+                    st.stop()
                 if is_experimental_size(image_size):
                     st.warning("当前尺寸超过 2560x1440 像素量，属于 experimental 范围，生成可能更慢或不稳定。")
                 payload = {
@@ -219,6 +240,10 @@ with tab2:
                 base64_image = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
                 image_url = f"data:{uploaded_file.type};base64,{base64_image}"
                 image_size = SIZE_OPTIONS[size_choice] or normalize_reference_size(reference_width, reference_height)
+                size_error = validate_image_size(image_size)
+                if size_error:
+                    st.error(f"当前尺寸 {image_size} 不符合模型要求：{size_error}")
+                    st.stop()
                 if is_experimental_size(image_size):
                     st.warning("当前尺寸超过 2560x1440 像素量，属于 experimental 范围，生成可能更慢或不稳定。")
 
