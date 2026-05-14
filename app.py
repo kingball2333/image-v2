@@ -10,6 +10,7 @@ MAX_PIXELS = 8_294_400
 MAX_EDGE = 3840
 MAX_RATIO = 3
 EXPERIMENTAL_PIXELS = 2560 * 1440
+MAX_REFERENCE_IMAGES = 16
 SIZE_OPTIONS = {
     "自动默认": None,
     "方形 1024x1024": "1024x1024",
@@ -74,6 +75,14 @@ def fetch_image_bytes(image_data):
     img_response = requests.get(image_url, timeout=120)
     img_response.raise_for_status()
     return img_response.content
+
+
+def uploaded_file_to_data_url(uploaded_file):
+    uploaded_file.seek(0)
+    image_bytes = uploaded_file.getvalue()
+    uploaded_file.seek(0)
+    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    return f"data:{uploaded_file.type};base64,{base64_image}"
 
 
 def parse_size(size):
@@ -222,23 +231,39 @@ with tab1:
 
 with tab2:
     st.info("图生图功能：上传参考图并输入修改指令")
-    uploaded_file = st.file_uploader("上传参考图", type=["png", "jpg", "jpeg"])
+    uploaded_files = st.file_uploader(
+        "上传参考图",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        help=f"最多上传 {MAX_REFERENCE_IMAGES} 张参考图"
+    )
+    if uploaded_files:
+        st.caption(f"已选择 {len(uploaded_files)} / {MAX_REFERENCE_IMAGES} 张参考图")
+        preview_columns = st.columns(min(len(uploaded_files), 4))
+        for index, file in enumerate(uploaded_files[:4]):
+            with preview_columns[index % len(preview_columns)]:
+                st.image(file, caption=file.name, use_column_width=True)
+        if len(uploaded_files) > 4:
+            st.caption(f"还有 {len(uploaded_files) - 4} 张未预览")
+
     edit_prompt = st.text_input("修改指令", placeholder="例如：改成水彩画风")
 
     if st.button("开始重绘"):
-        if uploaded_file is None:
-            st.warning("⚠️ 请先上传一张参考图片！")
+        if not uploaded_files:
+            st.warning("⚠️ 请先上传至少一张参考图片！")
+        elif len(uploaded_files) > MAX_REFERENCE_IMAGES:
+            st.warning(f"⚠️ 参考图最多支持 {MAX_REFERENCE_IMAGES} 张，请减少后再试。")
         elif not edit_prompt.strip():
             st.warning("⚠️ 请输入你要修改的指令！")
         else:
             with st.spinner("AI 正在重绘..."):
                 start_time = time.time()
-                uploaded_file.seek(0)
-                reference_image = Image.open(uploaded_file)
+                first_uploaded_file = uploaded_files[0]
+                first_uploaded_file.seek(0)
+                reference_image = Image.open(first_uploaded_file)
                 reference_width, reference_height = reference_image.size
-                uploaded_file.seek(0)
-                base64_image = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-                image_url = f"data:{uploaded_file.type};base64,{base64_image}"
+                first_uploaded_file.seek(0)
+                image_urls = [uploaded_file_to_data_url(file) for file in uploaded_files]
                 image_size = SIZE_OPTIONS[size_choice] or normalize_reference_size(reference_width, reference_height)
                 size_error = validate_image_size(image_size)
                 if size_error:
@@ -250,7 +275,7 @@ with tab2:
                 payload = {
                     "model": "gpt-image-2-vip",
                     "prompt": edit_prompt,
-                    "image": [image_url],
+                    "image": image_urls,
                     "size": image_size,
                     "response_format": "url"
                 }
@@ -270,7 +295,7 @@ with tab2:
                     image_data = res_data["data"][0]
                     img_bytes = fetch_image_bytes(image_data)
 
-                    st.success(f"🎉 重绘成功！尺寸 {image_size}，共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 重绘成功！参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
                     st.image(img_bytes, use_column_width=True)
                     st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
                                        file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
