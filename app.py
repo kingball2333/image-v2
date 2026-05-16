@@ -247,7 +247,7 @@ def is_experimental_size(size):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 Made BY ljj（5-12-1）")
+st.title("🎨 AI 绘图助手 Made BY ljj（5-16-1）")
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 
