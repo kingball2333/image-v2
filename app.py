@@ -2,7 +2,8 @@ import streamlit as st
 import requests
 import base64
 import time  # 【新增】引入时间模块用于计算耗时
-from PIL import Image
+from io import BytesIO
+from PIL import Image, ImageOps
 
 API_BASE = "https://www.right.codes/draw/v1"
 MIN_PIXELS = 655_360
@@ -11,6 +12,8 @@ MAX_EDGE = 3840
 MAX_RATIO = 3
 EXPERIMENTAL_PIXELS = 2560 * 1440
 MAX_REFERENCE_IMAGES = 16
+REFERENCE_MAX_EDGE = 2048
+REFERENCE_JPEG_QUALITY = 92
 SIZE_OPTIONS = {
     "自动默认": None,
     "方形 1024x1024": "1024x1024",
@@ -83,6 +86,88 @@ def uploaded_file_to_data_url(uploaded_file):
     uploaded_file.seek(0)
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     return f"data:{uploaded_file.type};base64,{base64_image}"
+
+
+def format_bytes(byte_count):
+    if byte_count >= 1024 * 1024:
+        return f"{byte_count / 1024 / 1024:.2f} MB"
+    return f"{byte_count / 1024:.0f} KB"
+
+
+def get_resample_filter():
+    if hasattr(Image, "Resampling"):
+        return Image.Resampling.LANCZOS
+    return Image.LANCZOS
+
+
+def uploaded_file_to_compressed_data_url(
+    uploaded_file,
+    max_edge=REFERENCE_MAX_EDGE,
+    quality=REFERENCE_JPEG_QUALITY,
+):
+    uploaded_file.seek(0)
+    original_bytes = uploaded_file.getvalue()
+    uploaded_file.seek(0)
+
+    with Image.open(BytesIO(original_bytes)) as image:
+        original_orientation = image.getexif().get(274, 1)
+        image = ImageOps.exif_transpose(image)
+        original_width, original_height = image.size
+        has_transparency = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
+        was_resized = False
+
+        if max(original_width, original_height) > max_edge:
+            scale = max_edge / max(original_width, original_height)
+            new_size = (
+                max(1, round(original_width * scale)),
+                max(1, round(original_height * scale)),
+            )
+            image = image.resize(new_size, get_resample_filter())
+            was_resized = True
+
+        if has_transparency:
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.convert("RGBA").getchannel("A"))
+            image = background
+        else:
+            image = image.convert("RGB")
+
+        buffer = BytesIO()
+        image.save(
+            buffer,
+            format="JPEG",
+            quality=quality,
+            optimize=True,
+            progressive=True,
+            subsampling=0,
+        )
+        compressed_bytes = buffer.getvalue()
+        compressed_size = image.size
+
+    original_mime = uploaded_file.type or "image/jpeg"
+    use_original = (
+        original_mime in ("image/jpeg", "image/jpg")
+        and not was_resized
+        and not has_transparency
+        and original_orientation == 1
+        and len(original_bytes) <= len(compressed_bytes)
+    )
+    if use_original:
+        output_bytes = original_bytes
+        output_mime = original_mime
+    else:
+        output_bytes = compressed_bytes
+        output_mime = "image/jpeg"
+
+    base64_image = base64.b64encode(output_bytes).decode("utf-8")
+    stats = {
+        "name": uploaded_file.name,
+        "original_bytes": len(original_bytes),
+        "compressed_bytes": len(output_bytes),
+        "original_size": (original_width, original_height),
+        "compressed_size": compressed_size,
+    }
+    return f"data:{output_mime};base64,{base64_image}", stats
 
 
 def parse_size(size):
@@ -231,6 +316,7 @@ with tab1:
 
 with tab2:
     st.info("图生图功能：上传参考图并输入修改指令")
+    st.caption(f"参考图发送前会自动等比压缩到最长边 {REFERENCE_MAX_EDGE}px、JPEG 质量 {REFERENCE_JPEG_QUALITY}，以降低超时概率。")
     uploaded_files = st.file_uploader(
         "上传参考图",
         type=["png", "jpg", "jpeg"],
@@ -260,10 +346,19 @@ with tab2:
                 start_time = time.time()
                 first_uploaded_file = uploaded_files[0]
                 first_uploaded_file.seek(0)
-                reference_image = Image.open(first_uploaded_file)
-                reference_width, reference_height = reference_image.size
+                with Image.open(first_uploaded_file) as reference_image:
+                    reference_image = ImageOps.exif_transpose(reference_image)
+                    reference_width, reference_height = reference_image.size
                 first_uploaded_file.seek(0)
-                image_urls = [uploaded_file_to_data_url(file) for file in uploaded_files]
+                compressed_images = [uploaded_file_to_compressed_data_url(file) for file in uploaded_files]
+                image_urls = [item[0] for item in compressed_images]
+                compression_stats = [item[1] for item in compressed_images]
+                original_total_bytes = sum(item["original_bytes"] for item in compression_stats)
+                compressed_total_bytes = sum(item["compressed_bytes"] for item in compression_stats)
+                st.caption(
+                    f"参考图已压缩：{format_bytes(original_total_bytes)} -> "
+                    f"{format_bytes(compressed_total_bytes)}"
+                )
                 image_size = SIZE_OPTIONS[size_choice] or normalize_reference_size(reference_width, reference_height)
                 size_error = validate_image_size(image_size)
                 if size_error:
