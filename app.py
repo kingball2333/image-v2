@@ -1,11 +1,22 @@
 import streamlit as st
 import requests
 import base64
-import time  # 【新增】引入时间模块用于计算耗时
+import os
+import time
 from io import BytesIO
 from PIL import Image, ImageOps
 
-API_BASE = "https://www.right.codes/draw/v1"
+# Right Code 画图接口现在使用异步任务模式：提交地址带 /draw，查询地址不带 /draw。
+# 保留环境变量覆盖，方便在不同中转站或测试环境中切换。
+API_BASE = os.environ.get("RIGHTAPI_DRAW_BASE_URL", "https://www.rightapi.ai/draw").rstrip("/")
+GENERATIONS_URL = f"{API_BASE}/v1/images/generations"
+TASKS_BASE_URL = os.environ.get(
+    "RIGHTAPI_TASKS_BASE_URL",
+    "https://www.rightapi.ai/v1/tasks",
+).rstrip("/")
+POLL_INTERVAL_SECONDS = 2
+POLL_TIMEOUT_SECONDS = 600
+POLL_REQUEST_TIMEOUT_SECONDS = 30
 MIN_PIXELS = 655_360
 MAX_PIXELS = 8_294_400
 MAX_EDGE = 3840
@@ -24,9 +35,7 @@ SIZE_OPTIONS = {
     "长海报 720x2160": "720x2160",
 }
 
-import os
-
-# 【修改点】：双保险读取 Key。先尝试 Zeabur 的方式，如果不行再尝试 Streamlit 的方式
+# 双保险读取 Key：先读取部署环境变量，再读取 Streamlit secrets。
 API_KEY = os.environ.get("MY_API_KEY")
 if not API_KEY:
     try:
@@ -51,7 +60,7 @@ def format_error_message(response):
     content_type = response.headers.get("Content-Type", "")
     if "application/json" in content_type:
         try:
-            return response.json()
+            return format_error_payload(response.json())
         except ValueError:
             pass
 
@@ -60,6 +69,20 @@ def format_error_message(response):
         return "服务器返回了 HTML 错误页，请稍后重试或检查中转站状态。"
 
     return text
+
+
+def format_error_payload(payload):
+    """从中转站的错误 JSON 中提取适合直接展示给用户的消息。"""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("detail") or error)
+        if error:
+            return str(error)
+        for key in ("message", "detail"):
+            if payload.get(key):
+                return str(payload[key])
+    return str(payload)
 
 
 def fetch_image_bytes(image_data):
@@ -78,6 +101,88 @@ def fetch_image_bytes(image_data):
     img_response = requests.get(image_url, timeout=120)
     img_response.raise_for_status()
     return img_response.content
+
+
+def generate_image_task(payload, progress_callback=None):
+    """提交异步绘图任务并轮询至完成，返回 Images 兼容的结果 JSON。"""
+    response = requests.post(
+        GENERATIONS_URL,
+        json=payload,
+        headers=HEADERS,
+        timeout=POLL_REQUEST_TIMEOUT_SECONDS,
+    )
+    if not response.ok:
+        raise RuntimeError(
+            f"提交绘图任务失败（HTTP {response.status_code}）：{format_error_message(response)}"
+        )
+
+    try:
+        task_data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("提交绘图任务失败：服务器返回的不是有效 JSON。") from exc
+    if not isinstance(task_data, dict):
+        raise RuntimeError(f"提交绘图任务失败：服务器返回了异常格式。返回内容：{format_error_payload(task_data)}")
+
+    # 兼容中转站直接返回完成结果的情况。
+    task_id = task_data.get("task_id")
+    if not task_id:
+        if task_data.get("data"):
+            return task_data
+        raise RuntimeError(f"提交绘图任务失败：响应中没有 task_id。返回内容：{format_error_payload(task_data)}")
+
+    pending_statuses = {"processing", "pending", "queued", "in_progress"}
+    deadline = time.monotonic() + POLL_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        status = task_data.get("status")
+        progress = task_data.get("progress")
+        if progress_callback:
+            progress_callback(status or "processing", progress)
+
+        if status == "completed" or task_data.get("data"):
+            return task_data
+        if status == "failed":
+            raise RuntimeError(f"绘图任务失败：{format_error_payload(task_data)}")
+        if status and status not in pending_statuses:
+            raise RuntimeError(f"绘图任务返回未知状态 {status!r}：{format_error_payload(task_data)}")
+
+        time.sleep(POLL_INTERVAL_SECONDS)
+        task_response = requests.get(
+            f"{TASKS_BASE_URL}/{task_id}",
+            headers=HEADERS,
+            timeout=POLL_REQUEST_TIMEOUT_SECONDS,
+        )
+        if not task_response.ok:
+            raise RuntimeError(
+                f"查询绘图任务失败（HTTP {task_response.status_code}）："
+                f"{format_error_message(task_response)}"
+            )
+        try:
+            task_data = task_response.json()
+        except ValueError as exc:
+            raise RuntimeError("查询绘图任务失败：服务器返回的不是有效 JSON。") from exc
+        if not isinstance(task_data, dict):
+            raise RuntimeError(f"查询绘图任务失败：服务器返回了异常格式。返回内容：{format_error_payload(task_data)}")
+
+    raise TimeoutError(
+        f"绘图任务超过 {POLL_TIMEOUT_SECONDS // 60} 分钟仍未完成，请稍后到中转站检查任务状态。"
+    )
+
+
+def update_task_progress(progress_bar, status_placeholder, status, progress):
+    """更新 Streamlit 中的异步任务进度，不影响旧版 Streamlit。"""
+    if isinstance(progress, (int, float)):
+        progress_bar.progress(max(0, min(100, int(progress))))
+    if status:
+        progress_text = f"（{int(progress)}%）" if isinstance(progress, (int, float)) else ""
+        status_placeholder.caption(f"任务状态：{status}{progress_text}")
+
+
+def get_first_image_data(result):
+    """校验并取出 Images 兼容响应中的第一张图片。"""
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        raise ValueError("任务已完成，但返回数据中没有可用的图片结果。")
+    return data[0]
 
 
 def uploaded_file_to_data_url(uploaded_file):
@@ -247,7 +352,7 @@ def is_experimental_size(size):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 Made BY ljj（5-16-1）")
+st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版8-3-1）")
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 
@@ -273,29 +378,28 @@ with tab1:
                 payload = {
                     "model": "gpt-image-2-vip",
                     "prompt": prompt,
-                    "image": [],
+                    "n": 1,
                     "size": image_size,
-                    "response_format": "url"
+                    "async": True,
                 }
+                progress_bar = st.progress(0)
+                status_placeholder = st.empty()
                 try:
-                    # 强烈建议加上 timeout，防止网络卡死
-                    response = requests.post(f"{API_BASE}/images/generations", json=payload, headers=HEADERS,
-                                             timeout=360)
-
-                    # 【优化】更优雅的错误处理，直接显示官方返回的错误内容
-                    if not response.ok:
-                        err_msg = format_error_message(response)
-                        st.error(f"❌ 生成失败！状态码: {response.status_code}\n\n服务器返回信息:\n{err_msg}")
-                        st.stop()  # 终止后续代码执行
-
-                    res_data = response.json()
+                    res_data = generate_image_task(
+                        payload,
+                        lambda status, progress: update_task_progress(
+                            progress_bar, status_placeholder, status, progress
+                        ),
+                    )
 
                     # 计算耗时
                     end_time = time.time()
                     elapsed_time = round(end_time - start_time, 2)
 
                     # 提取数据
-                    image_data = res_data["data"][0]
+                    progress_bar.progress(100)
+                    status_placeholder.caption("任务状态：completed")
+                    image_data = get_first_image_data(res_data)
                     revised_prompt = image_data.get("revised_prompt", "原样回显（模型未优化）")
                     image_bytes = fetch_image_bytes(image_data)
 
@@ -310,7 +414,9 @@ with tab1:
                                        file_name=f"ai_image_{int(time.time())}.png", mime="image/png")
 
                 except requests.exceptions.Timeout:
-                    st.error("❌ 请求超时了！可能是因为图片太复杂或者网络拥堵，请稍后再试。")
+                    st.error("❌ 网络请求超时了，请稍后重试。")
+                except TimeoutError as e:
+                    st.error(f"❌ {e}")
                 except Exception as e:
                     st.error(f"❌ 请求发生异常：{e}")
 
@@ -371,23 +477,26 @@ with tab2:
                     "model": "gpt-image-2-vip",
                     "prompt": edit_prompt,
                     "image": image_urls,
+                    "n": 1,
                     "size": image_size,
-                    "response_format": "url"
+                    "async": True,
                 }
+                progress_bar = st.progress(0)
+                status_placeholder = st.empty()
                 try:
-                    res = requests.post(f"{API_BASE}/images/generations", json=payload, headers=HEADERS, timeout=360)
-
-                    if not res.ok:
-                        err_msg = format_error_message(res)
-                        st.error(f"❌ 重绘失败！状态码: {res.status_code}\n\n服务器返回: {err_msg}")
-                        st.stop()
-
-                    res_data = res.json()
+                    res_data = generate_image_task(
+                        payload,
+                        lambda status, progress: update_task_progress(
+                            progress_bar, status_placeholder, status, progress
+                        ),
+                    )
 
                     end_time = time.time()
                     elapsed_time = round(end_time - start_time, 2)
 
-                    image_data = res_data["data"][0]
+                    progress_bar.progress(100)
+                    status_placeholder.caption("任务状态：completed")
+                    image_data = get_first_image_data(res_data)
                     img_bytes = fetch_image_bytes(image_data)
 
                     st.success(f"🎉 重绘成功！参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
@@ -396,6 +505,8 @@ with tab2:
                                        file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
 
                 except requests.exceptions.Timeout:
-                    st.error("❌ 请求超时！图片处理较慢，请重试。")
+                    st.error("❌ 网络请求超时了，请稍后重试。")
+                except TimeoutError as e:
+                    st.error(f"❌ {e}")
                 except Exception as e:
                     st.error(f"❌ 发生异常：{e}")
