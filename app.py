@@ -352,7 +352,7 @@ def is_experimental_size(size):
 
 
 st.set_page_config(page_title="AI 绘图助手", page_icon="🎨")
-st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版8-3-1）")
+st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-17-1）")
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 
@@ -409,7 +409,7 @@ with tab1:
                         st.info(revised_prompt)
 
                     # 渲染图片
-                    st.image(image_bytes, use_column_width=True)
+                    st.image(image_bytes, width="stretch")
                     st.download_button(label="📥 下载图片", data=image_bytes,
                                        file_name=f"ai_image_{int(time.time())}.png", mime="image/png")
 
@@ -434,7 +434,7 @@ with tab2:
         preview_columns = st.columns(min(len(uploaded_files), 4))
         for index, file in enumerate(uploaded_files[:4]):
             with preview_columns[index % len(preview_columns)]:
-                st.image(file, caption=file.name, use_column_width=True)
+                st.image(file, caption=file.name, width="stretch")
         if len(uploaded_files) > 4:
             st.caption(f"还有 {len(uploaded_files) - 4} 张未预览")
 
@@ -500,7 +500,7 @@ with tab2:
                     img_bytes = fetch_image_bytes(image_data)
 
                     st.success(f"🎉 重绘成功！参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
-                    st.image(img_bytes, use_column_width=True)
+                    st.image(img_bytes, width="stretch")
                     st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
                                        file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
 
