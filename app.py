@@ -359,7 +359,12 @@ st.set_page_config(
 st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-17-1）")
 old_page_link, company_page_link = st.columns(2)
 with old_page_link:
-    st.page_link("app.py", label="旧中转生图", icon="🎨", width="stretch")
+    st.button(
+        "旧中转生图",
+        icon="🎨",
+        disabled=True,
+        width="stretch",
+    )
 with company_page_link:
     st.page_link(
         "pages/1_公司生图.py",
