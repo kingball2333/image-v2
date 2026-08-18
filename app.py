@@ -366,12 +366,8 @@ with old_page_link:
         width="stretch",
     )
 with company_page_link:
-    st.page_link(
-        "pages/1_公司生图.py",
-        label="公司生图",
-        icon="🏢",
-        width="stretch",
-    )
+    if st.button("公司生图", icon="🏢", width="stretch"):
+        st.switch_page("pages/1_公司生图.py")
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 

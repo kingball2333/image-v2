@@ -166,7 +166,7 @@ def display_image_result(image_data, started_at):
 
 
 st.set_page_config(
-    page_title="公司生图8-18-3",
+    page_title="公司生图8-18-4",
     page_icon="🏢",
     initial_sidebar_state="expanded",
 )
@@ -176,10 +176,10 @@ with old_page_link:
     if st.button("旧中转生图", icon="🎨", width="stretch"):
         st.switch_page("app.py")
 with company_page_link:
-    st.page_link(
-        "pages/1_公司生图.py",
-        label="公司生图",
+    st.button(
+        "公司生图",
         icon="🏢",
+        disabled=True,
         width="stretch",
     )
 
