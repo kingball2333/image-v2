@@ -165,8 +165,22 @@ def display_image_result(image_data, started_at):
     )
 
 
-st.set_page_config(page_title="公司生图8-18-1", page_icon="🏢")
+st.set_page_config(
+    page_title="公司生图8-18-2",
+    page_icon="🏢",
+    initial_sidebar_state="expanded",
+)
 st.title("🏢 公司生图")
+old_page_link, company_page_link = st.columns(2)
+with old_page_link:
+    st.page_link("app.py", label="旧中转生图", icon="🎨", width="stretch")
+with company_page_link:
+    st.page_link(
+        "pages/1_公司生图.py",
+        label="公司生图",
+        icon="🏢",
+        width="stretch",
+    )
 
 api_key = get_company_api_key()
 if not api_key:
