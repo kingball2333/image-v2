@@ -6,6 +6,8 @@ import time
 from io import BytesIO
 from PIL import Image, ImageOps
 
+from company_image_page import render_company_page
+
 # Right Code 画图接口现在使用异步任务模式：提交地址带 /draw，查询地址不带 /draw。
 # 保留环境变量覆盖，方便在不同中转站或测试环境中切换。
 API_BASE = os.environ.get("RIGHTAPI_DRAW_BASE_URL", "https://www.rightapi.ai/draw").rstrip("/")
@@ -356,6 +358,11 @@ st.set_page_config(
     page_icon="🎨",
     initial_sidebar_state="expanded",
 )
+
+if st.query_params.get("page") == "company":
+    render_company_page()
+    st.stop()
+
 st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-17-1）")
 old_page_link, company_page_link = st.columns(2)
 with old_page_link:
@@ -367,7 +374,8 @@ with old_page_link:
     )
 with company_page_link:
     if st.button("公司生图", icon="🏢", width="stretch"):
-        st.switch_page("pages/1_公司生图.py")
+        st.query_params["page"] = "company"
+        st.rerun()
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 

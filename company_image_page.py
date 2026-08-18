@@ -165,77 +165,75 @@ def display_image_result(image_data, started_at):
     )
 
 
-st.set_page_config(
-    page_title="公司生图8-18-4",
-    page_icon="🏢",
-    initial_sidebar_state="expanded",
-)
-st.title("🏢 公司生图")
-old_page_link, company_page_link = st.columns(2)
-with old_page_link:
-    if st.button("旧中转生图", icon="🎨", width="stretch"):
-        st.switch_page("app.py")
-with company_page_link:
-    st.button(
-        "公司生图",
-        icon="🏢",
-        disabled=True,
-        width="stretch",
+def render_company_page():
+    st.title("🏢 公司生图")
+    old_page_link, company_page_link = st.columns(2)
+    with old_page_link:
+        if st.button("旧中转生图", icon="🎨", width="stretch"):
+            st.query_params["page"] = "old"
+            st.rerun()
+    with company_page_link:
+        st.button(
+            "公司生图",
+            icon="🏢",
+            disabled=True,
+            width="stretch",
+        )
+
+    api_key = get_company_api_key()
+    if not api_key:
+        st.error("未找到公司中转站密钥，请在 Streamlit Secrets 中配置 COMPANY_API_KEY。")
+        st.stop()
+
+    mode = st.radio("生成模式", ["文字生图", "图片重绘"], horizontal=True)
+    size_label = st.selectbox("图片尺寸", list(SIZE_OPTIONS.keys()))
+    uploaded_file = None
+    if mode == "图片重绘":
+        uploaded_file = st.file_uploader(
+            "上传一张参考图",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+        )
+        if uploaded_file:
+            st.image(uploaded_file, caption=uploaded_file.name, width="stretch")
+
+    prompt = st.text_area(
+        "画面描述",
+        placeholder=(
+            "例如：一只可爱的黄色小鸭，蓝色背景，儿童绘本风格"
+            if mode == "文字生图"
+            else "例如：保留主体和构图，把背景改成蓝色"
+        ),
+        height=160,
     )
 
-api_key = get_company_api_key()
-if not api_key:
-    st.error("未找到公司中转站密钥，请在 Streamlit Secrets 中配置 COMPANY_API_KEY。")
-    st.stop()
-
-mode = st.radio("生成模式", ["文字生图", "图片重绘"], horizontal=True)
-size_label = st.selectbox("图片尺寸", list(SIZE_OPTIONS.keys()))
-uploaded_file = None
-if mode == "图片重绘":
-    uploaded_file = st.file_uploader(
-        "上传一张参考图",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=False,
-    )
-    if uploaded_file:
-        st.image(uploaded_file, caption=uploaded_file.name, width="stretch")
-
-prompt = st.text_area(
-    "画面描述",
-    placeholder=(
-        "例如：一只可爱的黄色小鸭，蓝色背景，儿童绘本风格"
-        if mode == "文字生图"
-        else "例如：保留主体和构图，把背景改成蓝色"
-    ),
-    height=160,
-)
-
-if st.button("生成图片" if mode == "文字生图" else "开始重绘", type="primary"):
-    if not prompt.strip():
-        st.warning("请先输入画面描述。")
-    elif mode == "图片重绘" and uploaded_file is None:
-        st.warning("请先上传一张参考图。")
-    else:
-        started_at = time.monotonic()
-        try:
-            with st.spinner("正在生成图片..."):
-                if mode == "文字生图":
-                    image_data = generate_company_image(
-                        api_key,
-                        prompt.strip(),
-                        SIZE_OPTIONS[size_label],
-                    )
-                else:
-                    image_data = edit_company_image(
-                        api_key,
-                        prompt.strip(),
-                        SIZE_OPTIONS[size_label],
-                        uploaded_file,
-                    )
-            display_image_result(image_data, started_at)
-        except requests.exceptions.Timeout:
-            st.error("请求超时，图片可能仍在处理中，请稍后重试。")
-        except requests.exceptions.RequestException as exc:
-            st.error(f"网络请求失败：{exc}")
-        except (RuntimeError, ValueError, binascii.Error, UnidentifiedImageError) as exc:
-            st.error(str(exc))
+    button_label = "生成图片" if mode == "文字生图" else "开始重绘"
+    if st.button(button_label, type="primary"):
+        if not prompt.strip():
+            st.warning("请先输入画面描述。")
+        elif mode == "图片重绘" and uploaded_file is None:
+            st.warning("请先上传一张参考图。")
+        else:
+            started_at = time.monotonic()
+            try:
+                with st.spinner("正在生成图片..."):
+                    if mode == "文字生图":
+                        image_data = generate_company_image(
+                            api_key,
+                            prompt.strip(),
+                            SIZE_OPTIONS[size_label],
+                        )
+                    else:
+                        image_data = edit_company_image(
+                            api_key,
+                            prompt.strip(),
+                            SIZE_OPTIONS[size_label],
+                            uploaded_file,
+                        )
+                display_image_result(image_data, started_at)
+            except requests.exceptions.Timeout:
+                st.error("请求超时，图片可能仍在处理中，请稍后重试。")
+            except requests.exceptions.RequestException as exc:
+                st.error(f"网络请求失败：{exc}")
+            except (RuntimeError, ValueError, binascii.Error, UnidentifiedImageError) as exc:
+                st.error(str(exc))
