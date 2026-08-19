@@ -37,21 +37,6 @@ SIZE_OPTIONS = {
     "长海报 720x2160": "720x2160",
 }
 
-# 双保险读取 Key：先读取部署环境变量，再读取 Streamlit secrets。
-API_KEY = os.environ.get("MY_API_KEY")
-if not API_KEY:
-    try:
-        API_KEY = st.secrets["MY_API_KEY"]
-    except KeyError:
-        st.error("未找到 API Key，请配置环境变量 MY_API_KEY")
-        st.stop()
-
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
-
-
 def format_error_message(response):
     if response.status_code == 524:
         return (
@@ -362,6 +347,20 @@ st.set_page_config(
 if st.query_params.get("page") == "company":
     render_company_page()
     st.stop()
+
+# 旧中转只在旧页面读取自己的密钥，避免影响公司页面的独立配置。
+API_KEY = os.environ.get("MY_API_KEY")
+if not API_KEY:
+    try:
+        API_KEY = st.secrets["MY_API_KEY"]
+    except KeyError:
+        st.error("未找到 API Key，请配置环境变量 MY_API_KEY")
+        st.stop()
+
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
 
 st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-17-1）")
 old_page_link, company_page_link = st.columns(2)
