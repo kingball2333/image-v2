@@ -362,7 +362,7 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-17-1）")
+st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-20-1）")
 old_page_link, company_page_link = st.columns(2)
 with old_page_link:
     st.button(
@@ -453,10 +453,10 @@ with tab2:
     )
     if uploaded_files:
         st.caption(f"已选择 {len(uploaded_files)} / {MAX_REFERENCE_IMAGES} 张参考图")
-        preview_columns = st.columns(min(len(uploaded_files), 4))
+        preview_columns = st.columns(4)
         for index, file in enumerate(uploaded_files[:4]):
-            with preview_columns[index % len(preview_columns)]:
-                st.image(file, caption=file.name, width="stretch")
+            with preview_columns[index]:
+                st.image(file.getvalue(), caption=file.name, width=160)
         if len(uploaded_files) > 4:
             st.caption(f"还有 {len(uploaded_files) - 4} 张未预览")
 

@@ -1,5 +1,6 @@
 import base64
 import binascii
+import math
 import os
 import time
 from io import BytesIO
@@ -21,10 +22,17 @@ COMPANY_IMAGE_MODEL = os.environ.get("COMPANY_IMAGE_MODEL", "gpt-image-2")
 REQUEST_TIMEOUT_SECONDS = 360
 REFERENCE_MAX_EDGE = 4096
 REFERENCE_JPEG_QUALITY = 95
+MAX_REFERENCE_IMAGES = 16
 SIZE_OPTIONS = {
-    "自动默认 · 方形 1K (1024x1024)": None,
-    "横版高清 · 1.5K (1536x1024)": "1536x1024",
-    "竖版高清 · 1.5K (1024x1536)": "1024x1536",
+    "自动匹配 · 文生图方形 / 重绘跟随首图": None,
+    "方形 · 1024x1024": "1024x1024",
+    "横版 · 1536x1024": "1536x1024",
+    "竖版 · 1024x1536": "1024x1536",
+}
+EDIT_SIZE_RATIOS = {
+    "1024x1024": 1.0,
+    "1536x1024": 1.5,
+    "1024x1536": 2 / 3,
 }
 
 
@@ -40,6 +48,13 @@ def get_company_api_key():
 
 
 def format_api_error(response):
+    if response.status_code == 413:
+        return "参考图总文件过大，请减少图片数量或压缩后重试。"
+    if response.status_code == 429:
+        return "请求过于频繁或账户额度不足，请稍后重试并检查公司中转额度。"
+    if response.status_code in (502, 503, 504, 524):
+        return "中转站暂时不可用或生成超时，请稍后重试。"
+
     try:
         payload = response.json()
     except ValueError:
@@ -97,13 +112,18 @@ def get_reference_size(uploaded_file):
 
 
 def get_edit_size(width, height):
-    """将参考图比例映射到接口已验证的横版、竖版和方形尺寸。"""
+    """在接口已验证的尺寸中，选择与首张参考图画幅最接近的一项。"""
     ratio = width / height
-    if ratio > 1.2:
-        return "1536x1024"
-    if ratio < 0.84:
-        return "1024x1536"
-    return "1024x1024"
+    return min(
+        EDIT_SIZE_RATIOS,
+        key=lambda size: abs(math.log(ratio / EDIT_SIZE_RATIOS[size])),
+    )
+
+
+def format_bytes(byte_count):
+    if byte_count >= 1024 * 1024:
+        return f"{byte_count / (1024 * 1024):.1f} MB"
+    return f"{byte_count / 1024:.1f} KB"
 
 
 def prepare_reference_file(uploaded_file):
@@ -116,29 +136,51 @@ def prepare_reference_file(uploaded_file):
         image = ImageOps.exif_transpose(image)
         original_size = image.size
         if max(image.size) <= REFERENCE_MAX_EDGE:
-            return uploaded_file.name or "reference.png", uploaded_file.type or "image/png", original_bytes, original_size, False
+            return {
+                "filename": uploaded_file.name or "reference.png",
+                "mime_type": uploaded_file.type or "image/png",
+                "content": original_bytes,
+                "original_size": original_size,
+                "prepared_size": original_size,
+                "original_bytes": len(original_bytes),
+                "prepared_bytes": len(original_bytes),
+                "was_resized": False,
+            }
 
         scale = REFERENCE_MAX_EDGE / max(image.size)
         resized = image.resize(
             (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
             Image.Resampling.LANCZOS,
         )
-        if resized.mode not in ("RGB", "L"):
-            background = Image.new("RGB", resized.size, "white")
-            background.paste(resized, mask=resized.convert("RGBA").getchannel("A"))
-            resized = background
-        else:
-            resized = resized.convert("RGB")
-
         output = BytesIO()
-        resized.save(output, format="JPEG", quality=REFERENCE_JPEG_QUALITY, optimize=True)
-        return (
-            "reference.jpg",
-            "image/jpeg",
-            output.getvalue(),
-            original_size,
-            True,
+        has_alpha = "A" in resized.getbands() or (
+            resized.mode == "P" and "transparency" in resized.info
         )
+        if has_alpha:
+            resized.save(output, format="PNG", optimize=True)
+            filename = "reference.png"
+            mime_type = "image/png"
+        else:
+            resized.convert("RGB").save(
+                output,
+                format="JPEG",
+                quality=REFERENCE_JPEG_QUALITY,
+                optimize=True,
+            )
+            filename = "reference.jpg"
+            mime_type = "image/jpeg"
+
+        prepared_bytes = output.getvalue()
+        return {
+            "filename": filename,
+            "mime_type": mime_type,
+            "content": prepared_bytes,
+            "original_size": original_size,
+            "prepared_size": resized.size,
+            "original_bytes": len(original_bytes),
+            "prepared_bytes": len(prepared_bytes),
+            "was_resized": True,
+        }
 
 
 def parse_image_response(response):
@@ -176,8 +218,21 @@ def generate_company_image(api_key, prompt, size):
     return parse_image_response(response)
 
 
-def edit_company_image(api_key, prompt, size, uploaded_file):
-    filename, mime_type, image_bytes, original_size, was_resized = prepare_reference_file(uploaded_file)
+def edit_company_image(api_key, prompt, size, uploaded_files):
+    prepared_references = [
+        prepare_reference_file(uploaded_file) for uploaded_file in uploaded_files
+    ]
+    files = [
+        (
+            "image",
+            (
+                reference["filename"],
+                reference["content"],
+                reference["mime_type"],
+            ),
+        )
+        for reference in prepared_references
+    ]
 
     response = requests.post(
         COMPANY_IMAGE_EDIT_URL,
@@ -187,16 +242,10 @@ def edit_company_image(api_key, prompt, size, uploaded_file):
             "prompt": prompt,
             "size": size,
         },
-        files={
-            "image": (
-                filename,
-                image_bytes,
-                mime_type,
-            )
-        },
+        files=files,
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    return parse_image_response(response), original_size, was_resized
+    return parse_image_response(response), prepared_references
 
 
 def display_image_result(image_data, started_at, extra_caption=None):
@@ -214,22 +263,22 @@ def display_image_result(image_data, started_at, extra_caption=None):
         with st.expander("查看优化后的提示词"):
             st.write(revised_prompt)
 
-    st.image(image_bytes, width="stretch")
+    st.image(image_bytes, use_container_width=True)
     st.download_button(
         "下载图片",
         data=image_bytes,
         file_name=f"company_image_{int(time.time())}.{file_extension}",
         mime=image_mime,
-        width="stretch",
+        use_container_width=True,
     )
 
 
 def render_company_page():
-    st.title("🏢 公司生图")
-    st.caption("gpt-image-2 · 公司中转 · 支持文字生图和单图重绘")
+    st.title("🏢 公司生图8-20")
+    st.caption("gpt-image-2 · 公司中转 · 支持文字生图和多图参考重绘")
     old_page_link, company_page_link = st.columns(2)
     with old_page_link:
-        if st.button("旧中转生图", icon="🎨", width="stretch"):
+        if st.button("旧中转生图", icon="🎨", use_container_width=True):
             st.query_params["page"] = "old"
             st.rerun()
     with company_page_link:
@@ -237,7 +286,7 @@ def render_company_page():
             "公司生图",
             icon="🏢",
             disabled=True,
-            width="stretch",
+            use_container_width=True,
         )
 
     api_key = get_company_api_key()
@@ -250,29 +299,46 @@ def render_company_page():
     size_label = st.selectbox(
         "输出尺寸",
         list(SIZE_OPTIONS.keys()),
-        help="公司中转当前已验证支持 1K 方形和 1.5K 横竖版；选择高清尺寸可获得更多像素。",
+        help="自动模式下，文生图使用 1024x1024；图片重绘根据第一张参考图的画幅自动选择。",
     )
     selected_size = SIZE_OPTIONS[size_label]
-    uploaded_file = None
+    uploaded_files = []
     reference_size = None
     if mode == "图片重绘":
-        uploaded_file = st.file_uploader(
-            "上传一张参考图",
+        st.info("可上传多张参考图，第一张决定自动输出画幅；请在提示词中说明各图片的用途。")
+        uploaded_files = st.file_uploader(
+            "上传参考图",
             type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=False,
+            accept_multiple_files=True,
+            help=f"最多上传 {MAX_REFERENCE_IMAGES} 张，支持 PNG、JPG 和 WebP。",
         )
-        if uploaded_file:
-            reference_size = get_reference_size(uploaded_file)
-            preview_col, detail_col = st.columns([1.4, 1])
-            with preview_col:
-                st.image(uploaded_file, caption=uploaded_file.name, width="stretch")
-            with detail_col:
-                st.caption(f"原图尺寸：{reference_size[0]} × {reference_size[1]}")
-                if selected_size is None:
-                    st.info(f"自动输出：{get_edit_size(*reference_size)}")
-                else:
-                    st.info(f"指定输出：{selected_size}")
-                st.caption(f"超大参考图会在发送前等比缩放到最长边 {REFERENCE_MAX_EDGE}px，普通图片保持原始质量。")
+        if uploaded_files:
+            st.caption(
+                f"已选择 {len(uploaded_files)} / {MAX_REFERENCE_IMAGES} 张参考图"
+            )
+            preview_columns = st.columns(4)
+            for index, uploaded_file in enumerate(uploaded_files[:4]):
+                with preview_columns[index]:
+                    st.image(
+                        uploaded_file.getvalue(),
+                        caption=uploaded_file.name,
+                        width=160,
+                    )
+            if len(uploaded_files) > 4:
+                st.caption(f"还有 {len(uploaded_files) - 4} 张未预览")
+
+            reference_size = get_reference_size(uploaded_files[0])
+            output_size = selected_size or get_edit_size(*reference_size)
+            st.info(
+                f"第一张参考图：{reference_size[0]} × {reference_size[1]} · "
+                f"{'自动' if selected_size is None else '指定'}输出：{output_size}"
+            )
+            st.caption(
+                f"普通参考图保持原始文件质量；仅当最长边超过 {REFERENCE_MAX_EDGE}px 时等比缩放，"
+                "透明图片仍保留透明通道。"
+            )
+    elif selected_size is None:
+        st.caption("自动模式下，文字生图输出为 1024x1024。")
 
     prompt = st.text_area(
         "画面描述",
@@ -288,8 +354,10 @@ def render_company_page():
     if st.button(button_label, type="primary"):
         if not prompt.strip():
             st.warning("请先输入画面描述。")
-        elif mode == "图片重绘" and uploaded_file is None:
-            st.warning("请先上传一张参考图。")
+        elif mode == "图片重绘" and not uploaded_files:
+            st.warning("请先上传至少一张参考图。")
+        elif mode == "图片重绘" and len(uploaded_files) > MAX_REFERENCE_IMAGES:
+            st.warning(f"参考图最多支持 {MAX_REFERENCE_IMAGES} 张，请减少后再试。")
         else:
             started_at = time.monotonic()
             try:
@@ -302,16 +370,32 @@ def render_company_page():
                         )
                         result_caption = None
                     else:
-                        image_data, original_size, was_resized = edit_company_image(
+                        image_data, prepared_references = edit_company_image(
                             api_key,
                             prompt.strip(),
                             selected_size or get_edit_size(*reference_size),
-                            uploaded_file,
+                            uploaded_files,
+                        )
+                        original_total = sum(
+                            item["original_bytes"] for item in prepared_references
+                        )
+                        prepared_total = sum(
+                            item["prepared_bytes"] for item in prepared_references
+                        )
+                        resized_count = sum(
+                            item["was_resized"] for item in prepared_references
+                        )
+                        quality_note = (
+                            f"{resized_count} 张超大图已高质量缩放"
+                            if resized_count
+                            else "均保持原始文件质量"
                         )
                         result_caption = (
-                            f"参考图 {original_size[0]} × {original_size[1]}"
-                            + (f"，已高质量缩放到最长边 {REFERENCE_MAX_EDGE}px" if was_resized else "")
+                            f"参考图 {len(prepared_references)} 张，{quality_note} · "
+                            f"发送体积 {format_bytes(original_total)}"
                         )
+                        if prepared_total != original_total:
+                            result_caption += f" -> {format_bytes(prepared_total)}"
                 display_image_result(image_data, started_at, result_caption)
             except requests.exceptions.Timeout:
                 st.error("请求超时，图片可能仍在处理中，请稍后重试。")
