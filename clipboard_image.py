@@ -19,11 +19,12 @@ _paste_image_component = components.declare_component(
 class ClipboardImageFile(BytesIO):
     """让剪切板图片具备与 Streamlit UploadedFile 相同的最小接口。"""
 
-    def __init__(self, content, name, mime_type):
+    def __init__(self, content, name, mime_type, image_id=None):
         super().__init__(content)
         self.name = name
         self.type = mime_type
         self.size = len(content)
+        self.image_id = image_id or name
 
 
 def _read_component_value(component_key):
@@ -58,7 +59,12 @@ def get_pasted_images(state_key):
             extension = mime_type.rsplit("/", 1)[-1].replace("jpeg", "jpg")
             name = value.get("name") or f"clipboard_{value['timestamp']}.{extension}"
             st.session_state[images_key].append(
-                ClipboardImageFile(content, name, mime_type)
+                ClipboardImageFile(
+                    content,
+                    name,
+                    mime_type,
+                    image_id=str(value["timestamp"]),
+                )
             )
             st.session_state[timestamp_key] = value["timestamp"]
 
@@ -70,15 +76,63 @@ def clear_pasted_images(state_key):
     st.session_state[f"{state_key}_images"] = []
 
 
+def remove_pasted_image(state_key, image_index):
+    """删除当前页面通过剪切板粘贴的指定图片。"""
+    images = st.session_state.get(f"{state_key}_images", [])
+    if 0 <= image_index < len(images):
+        images.pop(image_index)
+
+
+def remove_pasted_images(state_key, image_indices):
+    """删除当前页面通过剪切板粘贴的多张指定图片。"""
+    images_key = f"{state_key}_images"
+    images = st.session_state.get(images_key, [])
+    indices = {index for index in image_indices if isinstance(index, int)}
+    st.session_state[images_key] = [
+        image for index, image in enumerate(images) if index not in indices
+    ]
+
+
 def render_paste_image_control(state_key):
     """渲染剪切板输入控件并返回当前会话中的粘贴图片。"""
     st.caption("也可以点击下方区域后按 Ctrl+V 粘贴图片（macOS 使用 ⌘V）")
     pasted_images = get_pasted_images(state_key)
-    if pasted_images and st.button(
-        "清空已粘贴图片",
-        key=f"{state_key}_clear",
-        help="只清空通过剪切板粘贴的图片，不影响文件上传图片。",
-    ):
-        clear_pasted_images(state_key)
-        st.rerun()
+    if pasted_images:
+        st.caption(f"已粘贴 {len(pasted_images)} 张图片，可单独或批量移除。")
+        image_by_id = {
+            str(getattr(image, "image_id", index)): (index, image)
+            for index, image in enumerate(pasted_images)
+        }
+        remove_options = list(image_by_id)
+        selected_image_ids = st.multiselect(
+            "选择要移除的已粘贴图片",
+            options=remove_options,
+            format_func=lambda image_id: (
+                f"{image_by_id[image_id][0] + 1}. {image_by_id[image_id][1].name}"
+            ),
+            key=f"{state_key}_remove_selection",
+            help="按住 Ctrl（macOS 使用 ⌘）可选择多张图片。",
+        )
+        action_columns = st.columns(2)
+        with action_columns[0]:
+            if st.button(
+                "删除选中图片",
+                key=f"{state_key}_remove_selected",
+                disabled=not selected_image_ids,
+                use_container_width=True,
+            ):
+                remove_pasted_images(
+                    state_key,
+                    [image_by_id[image_id][0] for image_id in selected_image_ids],
+                )
+                st.rerun()
+        with action_columns[1]:
+            if st.button(
+                "清空全部粘贴图片",
+                key=f"{state_key}_clear",
+                help="只清空通过剪切板粘贴的图片，不影响文件上传图片。",
+                use_container_width=True,
+            ):
+                clear_pasted_images(state_key)
+                st.rerun()
     return pasted_images

@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from clipboard_image import render_paste_image_control
+from clipboard_image import remove_pasted_image, render_paste_image_control
 
 
 COMPANY_IMAGE_API_URL = os.environ.get(
@@ -276,7 +276,7 @@ def display_image_result(image_data, started_at, extra_caption=None):
 
 
 def render_company_page():
-    st.title("🏢 公司生图8-20")
+    st.title("🏢 公司生图8-27")
     st.caption("gpt-image-2 · 公司中转 · 支持文字生图和多图参考重绘")
     old_page_link, company_page_link = st.columns(2)
     with old_page_link:
@@ -315,7 +315,8 @@ def render_company_page():
             help=f"最多上传 {MAX_REFERENCE_IMAGES} 张，支持 PNG、JPG 和 WebP。",
         )
         pasted_files = render_paste_image_control("company_edit")
-        all_reference_files = list(uploaded_files or []) + pasted_files
+        uploaded_files = list(uploaded_files or [])
+        all_reference_files = uploaded_files + pasted_files
         if all_reference_files:
             st.caption(
                 f"已选择 {len(all_reference_files)} / {MAX_REFERENCE_IMAGES} 张参考图"
@@ -328,6 +329,15 @@ def render_company_page():
                         caption=uploaded_file.name,
                         width=160,
                     )
+                    if index >= len(uploaded_files):
+                        pasted_index = index - len(uploaded_files)
+                        if st.button(
+                            "删除",
+                            key=f"company_edit_remove_{pasted_index}",
+                            help="移除这张剪切板图片",
+                        ):
+                            remove_pasted_image("company_edit", pasted_index)
+                            st.rerun()
             if len(all_reference_files) > 4:
                 st.caption(f"还有 {len(all_reference_files) - 4} 张未预览")
 

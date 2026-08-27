@@ -7,7 +7,7 @@ from io import BytesIO
 from PIL import Image, ImageOps
 
 from company_image_page import render_company_page
-from clipboard_image import render_paste_image_control
+from clipboard_image import remove_pasted_image, render_paste_image_control
 
 # Right Code 画图接口现在使用异步任务模式：提交地址带 /draw，查询地址不带 /draw。
 # 保留环境变量覆盖，方便在不同中转站或测试环境中切换。
@@ -453,13 +453,23 @@ with tab2:
         help=f"最多上传 {MAX_REFERENCE_IMAGES} 张参考图"
     )
     pasted_files = render_paste_image_control("old_edit")
-    all_reference_files = list(uploaded_files or []) + pasted_files
+    uploaded_files = list(uploaded_files or [])
+    all_reference_files = uploaded_files + pasted_files
     if all_reference_files:
         st.caption(f"已选择 {len(all_reference_files)} / {MAX_REFERENCE_IMAGES} 张参考图")
         preview_columns = st.columns(4)
         for index, file in enumerate(all_reference_files[:4]):
             with preview_columns[index]:
                 st.image(file.getvalue(), caption=file.name, width=160)
+                if index >= len(uploaded_files):
+                    pasted_index = index - len(uploaded_files)
+                    if st.button(
+                        "删除",
+                        key=f"old_edit_remove_{pasted_index}",
+                        help="移除这张剪切板图片",
+                    ):
+                        remove_pasted_image("old_edit", pasted_index)
+                        st.rerun()
         if len(all_reference_files) > 4:
             st.caption(f"还有 {len(all_reference_files) - 4} 张未预览")
 
