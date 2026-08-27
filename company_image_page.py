@@ -9,6 +9,8 @@ import requests
 import streamlit as st
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from clipboard_image import render_paste_image_control
+
 
 COMPANY_IMAGE_API_URL = os.environ.get(
     "COMPANY_IMAGE_API_URL",
@@ -312,22 +314,24 @@ def render_company_page():
             accept_multiple_files=True,
             help=f"最多上传 {MAX_REFERENCE_IMAGES} 张，支持 PNG、JPG 和 WebP。",
         )
-        if uploaded_files:
+        pasted_files = render_paste_image_control("company_edit")
+        all_reference_files = list(uploaded_files or []) + pasted_files
+        if all_reference_files:
             st.caption(
-                f"已选择 {len(uploaded_files)} / {MAX_REFERENCE_IMAGES} 张参考图"
+                f"已选择 {len(all_reference_files)} / {MAX_REFERENCE_IMAGES} 张参考图"
             )
             preview_columns = st.columns(4)
-            for index, uploaded_file in enumerate(uploaded_files[:4]):
+            for index, uploaded_file in enumerate(all_reference_files[:4]):
                 with preview_columns[index]:
                     st.image(
                         uploaded_file.getvalue(),
                         caption=uploaded_file.name,
                         width=160,
                     )
-            if len(uploaded_files) > 4:
-                st.caption(f"还有 {len(uploaded_files) - 4} 张未预览")
+            if len(all_reference_files) > 4:
+                st.caption(f"还有 {len(all_reference_files) - 4} 张未预览")
 
-            reference_size = get_reference_size(uploaded_files[0])
+            reference_size = get_reference_size(all_reference_files[0])
             output_size = selected_size or get_edit_size(*reference_size)
             st.info(
                 f"第一张参考图：{reference_size[0]} × {reference_size[1]} · "
@@ -354,9 +358,9 @@ def render_company_page():
     if st.button(button_label, type="primary"):
         if not prompt.strip():
             st.warning("请先输入画面描述。")
-        elif mode == "图片重绘" and not uploaded_files:
+        elif mode == "图片重绘" and not all_reference_files:
             st.warning("请先上传至少一张参考图。")
-        elif mode == "图片重绘" and len(uploaded_files) > MAX_REFERENCE_IMAGES:
+        elif mode == "图片重绘" and len(all_reference_files) > MAX_REFERENCE_IMAGES:
             st.warning(f"参考图最多支持 {MAX_REFERENCE_IMAGES} 张，请减少后再试。")
         else:
             started_at = time.monotonic()
@@ -374,7 +378,7 @@ def render_company_page():
                             api_key,
                             prompt.strip(),
                             selected_size or get_edit_size(*reference_size),
-                            uploaded_files,
+                            all_reference_files,
                         )
                         original_total = sum(
                             item["original_bytes"] for item in prepared_references

@@ -7,6 +7,7 @@ from io import BytesIO
 from PIL import Image, ImageOps
 
 from company_image_page import render_company_page
+from clipboard_image import render_paste_image_control
 
 # Right Code 画图接口现在使用异步任务模式：提交地址带 /draw，查询地址不带 /draw。
 # 保留环境变量覆盖，方便在不同中转站或测试环境中切换。
@@ -369,10 +370,10 @@ with old_page_link:
         "旧中转生图",
         icon="🎨",
         disabled=True,
-        width="stretch",
+        use_container_width=True,
     )
 with company_page_link:
-    if st.button("公司生图", icon="🏢", width="stretch"):
+    if st.button("公司生图", icon="🏢", use_container_width=True):
         st.query_params["page"] = "company"
         st.rerun()
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
@@ -431,7 +432,7 @@ with tab1:
                         st.info(revised_prompt)
 
                     # 渲染图片
-                    st.image(image_bytes, width="stretch")
+                    st.image(image_bytes, use_container_width=True)
                     st.download_button(label="📥 下载图片", data=image_bytes,
                                        file_name=f"ai_image_{int(time.time())}.png", mime="image/png")
 
@@ -451,34 +452,36 @@ with tab2:
         accept_multiple_files=True,
         help=f"最多上传 {MAX_REFERENCE_IMAGES} 张参考图"
     )
-    if uploaded_files:
-        st.caption(f"已选择 {len(uploaded_files)} / {MAX_REFERENCE_IMAGES} 张参考图")
+    pasted_files = render_paste_image_control("old_edit")
+    all_reference_files = list(uploaded_files or []) + pasted_files
+    if all_reference_files:
+        st.caption(f"已选择 {len(all_reference_files)} / {MAX_REFERENCE_IMAGES} 张参考图")
         preview_columns = st.columns(4)
-        for index, file in enumerate(uploaded_files[:4]):
+        for index, file in enumerate(all_reference_files[:4]):
             with preview_columns[index]:
                 st.image(file.getvalue(), caption=file.name, width=160)
-        if len(uploaded_files) > 4:
-            st.caption(f"还有 {len(uploaded_files) - 4} 张未预览")
+        if len(all_reference_files) > 4:
+            st.caption(f"还有 {len(all_reference_files) - 4} 张未预览")
 
     edit_prompt = st.text_input("修改指令", placeholder="例如：改成水彩画风")
 
     if st.button("开始重绘"):
-        if not uploaded_files:
+        if not all_reference_files:
             st.warning("⚠️ 请先上传至少一张参考图片！")
-        elif len(uploaded_files) > MAX_REFERENCE_IMAGES:
+        elif len(all_reference_files) > MAX_REFERENCE_IMAGES:
             st.warning(f"⚠️ 参考图最多支持 {MAX_REFERENCE_IMAGES} 张，请减少后再试。")
         elif not edit_prompt.strip():
             st.warning("⚠️ 请输入你要修改的指令！")
         else:
             with st.spinner("AI 正在重绘..."):
                 start_time = time.time()
-                first_uploaded_file = uploaded_files[0]
+                first_uploaded_file = all_reference_files[0]
                 first_uploaded_file.seek(0)
                 with Image.open(first_uploaded_file) as reference_image:
                     reference_image = ImageOps.exif_transpose(reference_image)
                     reference_width, reference_height = reference_image.size
                 first_uploaded_file.seek(0)
-                compressed_images = [uploaded_file_to_compressed_data_url(file) for file in uploaded_files]
+                compressed_images = [uploaded_file_to_compressed_data_url(file) for file in all_reference_files]
                 image_urls = [item[0] for item in compressed_images]
                 compression_stats = [item[1] for item in compressed_images]
                 original_total_bytes = sum(item["original_bytes"] for item in compression_stats)
@@ -522,7 +525,7 @@ with tab2:
                     img_bytes = fetch_image_bytes(image_data)
 
                     st.success(f"🎉 重绘成功！参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
-                    st.image(img_bytes, width="stretch")
+                    st.image(img_bytes, use_container_width=True)
                     st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
                                        file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
 

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>粘贴图片</title>
+    <style>
+      :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; background: transparent; color: #666; }
+      #paste-area {
+        box-sizing: border-box; width: 100%; min-height: 52px; padding: 10px 14px;
+        border: 1px dashed #9aa4b2; border-radius: 8px; background: rgba(128, 128, 128, .06);
+        color: #5f6b7a; cursor: pointer; font-size: 14px; text-align: left;
+      }
+      #paste-area:focus, #paste-area:hover { border-color: #ff4b4b; outline: none; }
+      #status { margin-top: 5px; font-size: 12px; color: #7a8491; }
+      #status.error { color: #d33; }
+    </style>
+  </head>
+  <body>
+    <button id="paste-area" type="button">
+      📋 点击此处后按 Ctrl+V 粘贴图片（macOS：⌘V）
+      <div id="status">支持截图、复制的图片；文件上传仍然可用</div>
+    </button>
+    <script>
+      const PASTE_EVENT = "streamlit:componentReady";
+      const VALUE_EVENT = "streamlit:setComponentValue";
+      const area = document.getElementById("paste-area");
+      const status = document.getElementById("status");
+
+      function sendMessage(type, payload) {
+        window.parent.postMessage({isStreamlitMessage: true, type, ...payload}, "*");
+      }
+
+      function setFrameHeight() {
+        sendMessage("streamlit:setFrameHeight", {height: document.body.scrollHeight});
+      }
+
+      function setValue(value) {
+        sendMessage(VALUE_EVENT, {value, dataType: "json"});
+      }
+
+      function showStatus(message, isError) {
+        status.textContent = message;
+        status.className = isError ? "error" : "";
+      }
+
+      area.addEventListener("click", () => {
+        area.focus();
+        showStatus("已准备好，请现在按 Ctrl+V 粘贴图片", false);
+      });
+
+      document.addEventListener("paste", (event) => {
+        const items = Array.from(event.clipboardData?.items || []);
+        const item = items.find((candidate) => candidate.type.startsWith("image/"));
+        if (!item) {
+          showStatus("剪切板中没有检测到图片，请复制图片后再试", true);
+          return;
+        }
+
+        event.preventDefault();
+        const blob = item.getAsFile();
+        if (!blob) {
+          showStatus("无法读取剪切板图片，请改用文件上传", true);
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || "");
+          const comma = dataUrl.indexOf(",");
+          if (comma < 0) {
+            showStatus("图片编码失败，请重新复制后再试", true);
+            return;
+          }
+          const timestamp = Date.now();
+          const extension = blob.type.split("/")[1] || "png";
+          setValue({
+            data: dataUrl.slice(comma + 1),
+            name: `clipboard_${timestamp}.${extension === "jpeg" ? "jpg" : extension}`,
+            type: blob.type || "image/png",
+            timestamp,
+          });
+          showStatus("图片已粘贴，可继续粘贴下一张", false);
+        };
+        reader.onerror = () => showStatus("读取图片失败，请改用文件上传", true);
+        reader.readAsDataURL(blob);
+      });
+
+      function signalReady() {
+        sendMessage(PASTE_EVENT, {apiVersion: 1});
+        setFrameHeight();
+      }
+
+      let readyRetry;
+      // 收到 render 代表父页面已经注册组件，可以停止握手重试。
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "streamlit:render") {
+          if (readyRetry) clearInterval(readyRetry);
+          setFrameHeight();
+        }
+      });
+      // 初次加载时父页面可能还没完成组件实例注册，稍微延迟并重试握手。
+      window.addEventListener("load", () => {
+        let attempts = 0;
+        setTimeout(signalReady, 200);
+        readyRetry = setInterval(() => {
+          signalReady();
+          attempts += 1;
+          if (attempts >= 20) clearInterval(readyRetry);
+        }, 500);
+      });
+    </script>
+  </body>
+</html>
