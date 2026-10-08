@@ -28,6 +28,10 @@ EXPERIMENTAL_PIXELS = 2560 * 1440
 MAX_REFERENCE_IMAGES = 16
 REFERENCE_MAX_EDGE = 2048
 REFERENCE_JPEG_QUALITY = 92
+MODEL_OPTIONS = {
+    "GPT Image 2 VIP（原模型）": "gpt-image-2-vip",
+    "GPT Image 2.5（新模型）": "gpt-image-2.5",
+}
 SIZE_OPTIONS = {
     "自动默认": None,
     "方形 1024x1024": "1024x1024",
@@ -363,7 +367,7 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版08-20-1）")
+st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版10-08-1）")
 old_page_link, company_page_link = st.columns(2)
 with old_page_link:
     st.button(
@@ -376,6 +380,15 @@ with company_page_link:
     if st.button("公司生图", icon="🏢", use_container_width=True):
         st.query_params["page"] = "company"
         st.rerun()
+model_choice = st.sidebar.selectbox(
+    "生图模型",
+    list(MODEL_OPTIONS.keys()),
+    index=0,
+    key="old_image_model",
+    help="文字生图和图片重绘都使用此处选择的模型。",
+)
+selected_model = MODEL_OPTIONS[model_choice]
+st.sidebar.caption(f"当前模型：{selected_model}")
 size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
 st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
 
@@ -399,7 +412,7 @@ with tab1:
                 if is_experimental_size(image_size):
                     st.warning("当前尺寸超过 2560x1440 像素量，属于 experimental 范围，生成可能更慢或不稳定。")
                 payload = {
-                    "model": "gpt-image-2-vip",
+                    "model": selected_model,
                     "prompt": prompt,
                     "n": 1,
                     "size": image_size,
@@ -427,7 +440,7 @@ with tab1:
                     image_bytes = fetch_image_bytes(image_data)
 
                     # 【优化】显示成功提示、耗时和优化的提示词
-                    st.success(f"🎉 生成成功！尺寸 {image_size}，共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 生成成功！模型 {selected_model}，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
                     with st.expander("💡 查看 AI 优化后的提示词 (点击展开)", expanded=True):
                         st.info(revised_prompt)
 
@@ -509,7 +522,7 @@ with tab2:
                     st.warning("当前尺寸超过 2560x1440 像素量，属于 experimental 范围，生成可能更慢或不稳定。")
 
                 payload = {
-                    "model": "gpt-image-2-vip",
+                    "model": selected_model,
                     "prompt": edit_prompt,
                     "image": image_urls,
                     "n": 1,
@@ -534,7 +547,7 @@ with tab2:
                     image_data = get_first_image_data(res_data)
                     img_bytes = fetch_image_bytes(image_data)
 
-                    st.success(f"🎉 重绘成功！参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 重绘成功！模型 {selected_model}，参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
                     st.image(img_bytes, use_container_width=True)
                     st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
                                        file_name=f"edited_image_{int(time.time())}.png", mime="image/png")

@@ -276,7 +276,7 @@ def display_image_result(image_data, started_at, extra_caption=None):
 
 
 def render_company_page():
-    st.title("🏢 公司生图8-27")
+    st.title("🏢 公司生图10-08")
     st.caption("gpt-image-2 · 公司中转 · 支持文字生图和多图参考重绘")
     old_page_link, company_page_link = st.columns(2)
     with old_page_link:
