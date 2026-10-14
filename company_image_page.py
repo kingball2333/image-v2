@@ -10,6 +10,7 @@ import streamlit as st
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from clipboard_image import remove_pasted_image, render_paste_image_control
+from image_results import get_download_info, render_image_results, save_image_result
 
 
 COMPANY_IMAGE_API_URL = os.environ.get(
@@ -91,18 +92,6 @@ def fetch_image_bytes(image_data):
     image_response = requests.get(image_url, timeout=REQUEST_TIMEOUT_SECONDS)
     image_response.raise_for_status()
     return image_response.content
-
-
-def get_download_info(image_bytes):
-    with Image.open(BytesIO(image_bytes)) as image:
-        image_format = (image.format or "PNG").lower()
-        image_size = image.size
-
-    if image_format == "jpeg":
-        return "jpg", "image/jpeg", image_size, "JPEG"
-    if image_format == "webp":
-        return "webp", "image/webp", image_size, "WebP"
-    return "png", "image/png", image_size, "PNG"
 
 
 def get_reference_size(uploaded_file):
@@ -250,28 +239,18 @@ def edit_company_image(api_key, prompt, size, uploaded_files):
     return parse_image_response(response), prepared_references
 
 
-def display_image_result(image_data, started_at, extra_caption=None):
+def display_image_result(image_data, started_at, extra_caption=None, prompt=""):
     image_bytes = fetch_image_bytes(image_data)
-    file_extension, image_mime, image_size, image_format = get_download_info(image_bytes)
+    _, _, image_size, image_format = get_download_info(image_bytes)
     elapsed_seconds = round(time.monotonic() - started_at, 2)
 
-    st.success(f"生成成功，共耗时 {elapsed_seconds} 秒")
     caption = f"输出尺寸：{image_size[0]} × {image_size[1]} · {image_format}"
     if extra_caption:
         caption = f"{extra_caption} · {caption}"
-    st.caption(caption)
-    revised_prompt = image_data.get("revised_prompt")
-    if revised_prompt:
-        with st.expander("查看优化后的提示词"):
-            st.write(revised_prompt)
-
-    st.image(image_bytes, use_container_width=True)
-    st.download_button(
-        "下载图片",
-        data=image_bytes,
-        file_name=f"company_image_{int(time.time())}.{file_extension}",
-        mime=image_mime,
-        use_container_width=True,
+    save_image_result(
+        "company", image_bytes, model=COMPANY_IMAGE_MODEL, prompt=prompt,
+        elapsed_seconds=elapsed_seconds, caption=caption,
+        revised_prompt=image_data.get("revised_prompt"),
     )
 
 
@@ -410,10 +389,25 @@ def render_company_page():
                         )
                         if prepared_total != original_total:
                             result_caption += f" -> {format_bytes(prepared_total)}"
-                display_image_result(image_data, started_at, result_caption)
+                display_image_result(image_data, started_at, result_caption, prompt.strip())
             except requests.exceptions.Timeout:
                 st.error("请求超时，图片可能仍在处理中，请稍后重试。")
             except requests.exceptions.RequestException as exc:
                 st.error(f"网络请求失败：{exc}")
             except (RuntimeError, ValueError, binascii.Error, UnidentifiedImageError) as exc:
                 st.error(str(exc))
+
+    def refine_company_image(instruction, references):
+        started_at = time.monotonic()
+        size = selected_size or get_edit_size(*get_reference_size(references[0]))
+        image_data, prepared_references = edit_company_image(api_key, instruction, size, references)
+        image_bytes = fetch_image_bytes(image_data)
+        return {
+            "image_bytes": image_bytes, "model": COMPANY_IMAGE_MODEL,
+            "elapsed_seconds": round(time.monotonic() - started_at, 2),
+            "caption": f"连续调整 · 参考图 {len(prepared_references)} 张 · 请求尺寸 {size}",
+            "revised_prompt": image_data.get("revised_prompt"),
+        }
+
+    render_image_results("company", model=COMPANY_IMAGE_MODEL,
+                         refine_image=refine_company_image, max_reference_images=MAX_REFERENCE_IMAGES)

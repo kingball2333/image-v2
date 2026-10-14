@@ -185,6 +185,197 @@ class ImagePageTests(unittest.TestCase):
             self.assertIn("poll failed", app.error[0].value)
             self.assertEqual(get.call_count, 1)
 
+    @staticmethod
+    def colored_image(color):
+        output = BytesIO()
+        Image.new("RGB", (1024, 1024), color).save(output, "PNG")
+        return output.getvalue()
+
+    def assert_reference_color(self, data_url, color):
+        raw = base64.b64decode(data_url.split(",", 1)[-1])
+        with Image.open(BytesIO(raw)) as image:
+            self.assertEqual(image.size, (1024, 1024))
+            actual = image.convert("RGB").getpixel((0, 0))
+            for channel, expected in zip(actual, color):
+                self.assertLessEqual(abs(channel - expected), 2)
+
+    def test_old_refinement_chains_latest_image_and_isolates_inputs(self):
+        for model, label in (("gpt-image-2.5-flare", "GPT Image 2.5 Flare（速度优先）"),
+                             ("gemini-nano-banana-2.1", "Nano Banana 2.1（速度优先）")):
+            with self.subTest(model=model):
+                app = self.run_app(AppTest.from_file(str(PROJECT / "app.py")))
+                app.selectbox(key="old_image_model").select(label)
+                self.run_app(app)
+                colors = ((220, 10, 10), (10, 220, 10), (10, 10, 220))
+                images = [self.colored_image(color) for color in colors]
+                responses = [self.response({"data": [{"b64_json": base64.b64encode(img).decode()}]})
+                             for img in images]
+                with patch("requests.post", side_effect=responses) as post, patch("requests.get") as get:
+                    app.text_area[0].set_value("initial")
+                    next(item for item in app.button if item.label == "生成图片").click()
+                    self.run_app(app)
+                    initial = app.session_state["old_results"][0]
+                    self.run_app(app)
+                    self.assertEqual(post.call_count, 1)
+                    self.assertEqual(app.session_state["old_results"][0]["id"], initial["id"])
+                    prefix = f"old_refine_{initial['id']}"
+                    app.session_state[f"{prefix}_images"] = [
+                        ClipboardImageFile(self.reference_bytes, "extra.png", "image/png", "extra")
+                    ]
+                    self.run_app(app)
+                    app.text_area(key=f"{prefix}_instruction").set_value("change background")
+                    app.button(key=f"{prefix}_submit").click()
+                    self.run_app(app)
+                    second = app.session_state["old_results"][0]
+                    self.assertEqual(second["parent_id"], initial["id"])
+                    self.assertEqual(second["image_bytes"], images[1])
+                    payload = post.call_args.kwargs["json"]
+                    if model in GEMINI_MODELS:
+                        parts = payload["contents"][0]["parts"]
+                        self.assertEqual(len(parts), 3)
+                        self.assert_reference_color(parts[1]["inline_data"]["data"], colors[0])
+                    else:
+                        self.assertTrue(post.call_args.args[0].endswith("/images/edits"))
+                        self.assertEqual(len(payload["image"]), 2)
+                        self.assertEqual(payload["size"], "1024x1024")
+                        self.assert_reference_color(payload["image"][0], colors[0])
+                        self.assertIn("change background", payload["prompt"])
+                    prefix = f"old_refine_{second['id']}"
+                    self.assertEqual(app.text_area(key=f"{prefix}_instruction").value, "")
+                    app.text_area(key=f"{prefix}_instruction").set_value("more detail")
+                    app.button(key=f"{prefix}_submit").click()
+                    self.run_app(app)
+                    third = app.session_state["old_results"][0]
+                    self.assertEqual(third["parent_id"], second["id"])
+                    self.assertEqual(third["image_bytes"], images[2])
+                    payload = post.call_args.kwargs["json"]
+                    if model in GEMINI_MODELS:
+                        parts = payload["contents"][0]["parts"]
+                        self.assertEqual(len(parts), 2)
+                        self.assert_reference_color(parts[1]["inline_data"]["data"], colors[1])
+                    else:
+                        self.assertEqual(len(payload["image"]), 1)
+                        self.assert_reference_color(payload["image"][0], colors[1])
+                    self.assertEqual(post.call_count, 3)
+                    get.assert_not_called()
+
+                prefix = f"old_refine_{third['id']}"
+                with patch("requests.post") as post:
+                    app.button(key=f"{prefix}_submit").click()
+                    self.run_app(app)
+                    self.assertTrue(app.warning)
+                    post.assert_not_called()
+                    app.session_state[f"{prefix}_images"] = [
+                        ClipboardImageFile(self.reference_bytes, f"extra{i}.png", "image/png", str(i))
+                        for i in range(16)
+                    ]
+                    self.run_app(app)
+                    app.text_area(key=f"{prefix}_instruction").set_value("too many")
+                    app.button(key=f"{prefix}_submit").click()
+                    self.run_app(app)
+                    self.assertIn("最多支持 16", app.warning[0].value)
+                    post.assert_not_called()
+                app.session_state[f"{prefix}_images"] = []
+                self.run_app(app)
+                app.selectbox(key=f"old_version_{third['id']}").select(initial["id"])
+                self.run_app(app)
+                prefix = f"old_refine_{initial['id']}"
+                with patch("requests.post", return_value=self.response({"status": "failed", "error": "refine failed"})) as post:
+                    app.text_area(key=f"{prefix}_instruction").set_value("try earlier version")
+                    app.button(key=f"{prefix}_submit").click()
+                    self.run_app(app)
+                    self.assertIn("上一版图片已保留", app.error[0].value)
+                    self.assertEqual(len(app.session_state["old_results"]), 3)
+                    self.assertEqual(app.session_state["old_results"][0]["id"], third["id"])
+                    self.assertEqual(app.selectbox(key=f"old_version_{third['id']}").value, initial["id"])
+                    self.assertEqual(post.call_count, 1)
+
+    def test_company_refinement_uses_latest_bytes_and_preserves_results_across_pages(self):
+        app = AppTest.from_file(str(PROJECT / "app.py"))
+        app.query_params["page"] = "company"
+        self.run_app(app)
+        first = self.colored_image((240, 30, 30))
+        second = self.colored_image((30, 240, 30))
+        third = self.colored_image((30, 30, 240))
+        def response_bytes(content):
+            return self.response({"data": [{"b64_json": base64.b64encode(content).decode()}]})
+        with patch("requests.post", side_effect=[response_bytes(first), response_bytes(second), response_bytes(third)]) as post:
+            app.text_area[0].set_value("initial company")
+            next(item for item in app.button if item.label == "生成图片").click()
+            self.run_app(app)
+            initial = app.session_state["company_results"][0]
+            self.run_app(app)
+            self.assertEqual(post.call_count, 1)
+            prefix = f"company_refine_{initial['id']}"
+            app.session_state[f"{prefix}_images"] = [
+                ClipboardImageFile(self.reference_bytes, "extra.png", "image/png", "extra")
+            ]
+            self.run_app(app)
+            app.text_area(key=f"{prefix}_instruction").set_value("modify company")
+            app.button(key=f"{prefix}_submit").click()
+            self.run_app(app)
+            self.assertEqual(post.call_args.args[0], "https://new-api.hk.ilabservice.cloud/v1/images/edits")
+            self.assertEqual(len(post.call_args.kwargs["files"]), 2)
+            self.assertEqual(post.call_args.kwargs["files"][0][1][1], first)
+            self.assertEqual(post.call_args.kwargs["files"][1][1][1], self.reference_bytes)
+            second_result = app.session_state["company_results"][0]
+            self.assertEqual(second_result["image_bytes"], second)
+            prefix = f"company_refine_{second_result['id']}"
+            app.text_area(key=f"{prefix}_instruction").set_value("modify again")
+            app.button(key=f"{prefix}_submit").click()
+            self.run_app(app)
+            self.assertEqual(len(post.call_args.kwargs["files"]), 1)
+            self.assertEqual(post.call_args.kwargs["files"][0][1][1], second)
+            self.assertEqual(post.call_count, 3)
+            self.assertEqual(len(app.session_state["company_results"]), 3)
+        latest = app.session_state["company_results"][0]
+        prefix = f"company_refine_{latest['id']}"
+        with patch("requests.post", side_effect=RuntimeError("company failed")):
+            app.text_area(key=f"{prefix}_instruction").set_value("fail once")
+            app.button(key=f"{prefix}_submit").click()
+            self.run_app(app)
+            self.assertIn("上一版图片已保留", app.error[0].value)
+            self.assertEqual(app.session_state["company_results"][0]["image_bytes"], third)
+        next(item for item in app.button if item.label == "旧中转生图").click()
+        self.run_app(app)
+        self.assertFalse(any(item.label == "选择结果版本" for item in app.selectbox))
+        next(item for item in app.button if item.label == "公司生图").click()
+        self.run_app(app)
+        self.assertEqual(app.session_state["company_results"][0]["id"], latest["id"])
+        self.assertTrue(any(item.label == "选择结果版本" for item in app.selectbox))
+
+    def test_version_limit_and_invalid_image_preserve_latest(self):
+        app = self.run_app(AppTest.from_file(str(PROJECT / "app.py")))
+        image_bytes = self.colored_image((120, 120, 120))
+        result = self.response({"data": [{"b64_json": base64.b64encode(image_bytes).decode()}]})
+        with patch("requests.post", return_value=result):
+            app.text_area[0].set_value("history")
+            for _ in range(7):
+                next(item for item in app.button if item.label == "生成图片").click()
+                self.run_app(app)
+            versions = app.session_state["old_results"]
+            self.assertEqual([item["version"] for item in versions], [7, 6, 5, 4, 3])
+        prefix = f"old_refine_{versions[0]['id']}"
+        invalid = self.response({"data": [{"b64_json": base64.b64encode(b'not an image').decode()}]})
+        with patch("requests.post", return_value=invalid):
+            app.text_area(key=f"{prefix}_instruction").set_value("invalid result")
+            app.button(key=f"{prefix}_submit").click()
+            self.run_app(app)
+            self.assertTrue(app.error)
+            self.assertEqual(app.session_state["old_results"][0]["id"], versions[0]["id"])
+        oldest = versions[-1]
+        app.selectbox(key=f"old_version_{versions[0]['id']}").select(oldest["id"])
+        self.run_app(app)
+        prefix = f"old_refine_{oldest['id']}"
+        with patch("requests.post", return_value=result):
+            app.text_area(key=f"{prefix}_instruction").set_value("branch from earlier version")
+            app.button(key=f"{prefix}_submit").click()
+            self.run_app(app)
+            self.assertFalse(app.error)
+            history = app.session_state["old_results"]
+            self.assertEqual(history[0]["parent_id"], oldest["id"])
+            self.assertEqual([item["version"] for item in history], [8, 7, 6, 5, 4])
+
 
 if __name__ == "__main__":
     unittest.main()

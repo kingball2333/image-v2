@@ -6,8 +6,9 @@ import time
 from io import BytesIO
 from PIL import Image, ImageOps
 
-from company_image_page import get_download_info, render_company_page
+from company_image_page import render_company_page
 from clipboard_image import remove_pasted_image, render_paste_image_control
+from image_results import render_image_results, save_image_result
 from rightapi_models import (
     GEMINI_ASPECT_RATIOS,
     GEMINI_MODELS,
@@ -497,20 +498,15 @@ with tab1:
                     progress_bar.progress(100)
                     status_placeholder.caption("任务状态：completed")
                     image_data = get_first_image_data(res_data)
-                    revised_prompt = image_data.get("revised_prompt", "原样回显（模型未优化）")
                     image_bytes = fetch_image_bytes(image_data)
-                    extension, mime, actual_size, image_format = get_download_info(image_bytes)
-
-                    # 【优化】显示成功提示、耗时和优化的提示词
-                    st.success(f"🎉 生成成功！模型 {selected_model}，实际尺寸 {actual_size[0]}×{actual_size[1]}，共耗时 {elapsed_time} 秒")
-                    st.caption(f"请求画幅 / 尺寸：{image_size}" + (f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}") + f" · {image_format}")
-                    with st.expander("💡 查看 AI 优化后的提示词 (点击展开)", expanded=True):
-                        st.info(revised_prompt)
-
-                    # 渲染图片
-                    st.image(image_bytes, use_container_width=True)
-                    st.download_button(label="📥 下载图片", data=image_bytes,
-                                       file_name=f"ai_image_{int(time.time())}.{extension}", mime=mime)
+                    save_image_result(
+                        "old", image_bytes, model=selected_model, prompt=prompt,
+                        elapsed_seconds=elapsed_time,
+                        caption=f"请求画幅 / 尺寸：{image_size}" + (
+                            f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}"
+                        ),
+                        revised_prompt=image_data.get("revised_prompt"),
+                    )
 
                 except requests.exceptions.Timeout:
                     st.error("❌ 网络请求超时了，请稍后重试。")
@@ -614,13 +610,14 @@ with tab2:
                     status_placeholder.caption("任务状态：completed")
                     image_data = get_first_image_data(res_data)
                     img_bytes = fetch_image_bytes(image_data)
-                    extension, mime, actual_size, image_format = get_download_info(img_bytes)
-
-                    st.success(f"🎉 重绘成功！模型 {selected_model}，参考图 {len(image_urls)} 张，实际尺寸 {actual_size[0]}×{actual_size[1]}，共耗时 {elapsed_time} 秒")
-                    st.caption(f"请求画幅 / 尺寸：{image_size}" + (f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}") + f" · {image_format}")
-                    st.image(img_bytes, use_container_width=True)
-                    st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
-                                       file_name=f"edited_image_{int(time.time())}.{extension}", mime=mime)
+                    save_image_result(
+                        "old", img_bytes, model=selected_model, prompt=edit_prompt,
+                        elapsed_seconds=elapsed_time,
+                        caption=f"参考图 {len(image_urls)} 张 · 请求画幅 / 尺寸：{image_size}" + (
+                            f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}"
+                        ),
+                        revised_prompt=image_data.get("revised_prompt"),
+                    )
 
                 except requests.exceptions.Timeout:
                     st.error("❌ 网络请求超时了，请稍后重试。")
@@ -628,3 +625,43 @@ with tab2:
                     st.error(f"❌ {e}")
                 except Exception as e:
                     st.error(f"❌ 发生异常：{e}")
+
+
+def refine_old_image(instruction, references):
+    started_at = time.monotonic()
+    with Image.open(BytesIO(references[0].getvalue())) as reference_image:
+        reference_size = ImageOps.exif_transpose(reference_image).size
+    image_size = resolve_output_size(size_choice, reference_size, gemini=is_gemini)
+    if not is_gemini and SIZE_OPTIONS[size_choice] is None:
+        # 继续调整的自动模式尽量保留结果分辨率，不把有效的大图重新降为默认尺寸。
+        original_size = f"{reference_size[0]}x{reference_size[1]}"
+        if validate_image_size(original_size) is None:
+            image_size = original_size
+    image_urls = [uploaded_file_to_compressed_data_url(file)[0] for file in references]
+    request_url, payload = build_image_request(
+        selected_model, instruction, image_size, image_urls,
+        quality=quality, image_size=image_size_tier,
+    )
+    if not is_gemini and is_experimental_size(image_size):
+        st.warning("当前尺寸属于实验性大图，生成可能更慢或不稳定。")
+    progress_bar = st.progress(0)
+    status_placeholder = st.empty()
+    response = generate_image_task(
+        payload,
+        lambda status, progress: update_task_progress(progress_bar, status_placeholder, status, progress),
+        request_url=request_url,
+    )
+    image_data = get_first_image_data(response)
+    image_bytes = fetch_image_bytes(image_data)
+    return {
+        "image_bytes": image_bytes, "model": selected_model,
+        "elapsed_seconds": round(time.monotonic() - started_at, 2),
+        "caption": f"连续调整 · 参考图 {len(references)} 张 · 请求画幅 / 尺寸：{image_size}" + (
+            f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}"
+        ),
+        "revised_prompt": image_data.get("revised_prompt"),
+    }
+
+
+render_image_results("old", model=selected_model, refine_image=refine_old_image,
+                     max_reference_images=MAX_REFERENCE_IMAGES)

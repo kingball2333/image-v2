@@ -12,7 +12,7 @@
 旧中转继续从 Streamlit Secrets 的 `MY_API_KEY` 或同名环境变量读取密钥。
 公司页面继续使用独立的 `COMPANY_API_KEY`。
 
-提交时必须包含 `app.py` 和新增的 `rightapi_models.py`；测试文件也建议一并提交。
+提交时必须包含 `app.py`、`company_image_page.py`、`rightapi_models.py` 和 `image_results.py`；测试文件也建议一并提交。
 无需安装新依赖或修改 `requirements.txt`。
 
 默认地址：
@@ -52,12 +52,24 @@
 
 ## 验证
 
+两个页面的文生图、图生图结果均保存到当前浏览器会话。
+结果下方可选择最近 5 个版本，填写补充修改要求、上传或粘贴额外参考图，
+点击“根据这张图继续生成”。选中结果自动作为第一张参考图，补充图按顺序排在后面。
+每轮成功后选中新版本，并重置新一轮的输入；失败保留已有版本。
+旧中转沿用页面当前的模型、尺寸和质量，公司页面沿用公司接口和尺寸设置。
+不会隐式重发原始参考图或上一轮补充图，需要继续使用时请在本轮再次添加。
+每次点击继续生成会进行一次新的图生图调用，按对应中转站计费。
+这不是服务端聊天记忆：每轮以选中结果图片和本轮要求进行编辑。
+会话结束、重新打开页面或服务重启后记录可能丢失，需要长期保存的图片请下载。
+
 ```powershell
 python -m unittest discover -s tests -v
-python -m py_compile app.py rightapi_models.py company_image_page.py clipboard_image.py
+python -m py_compile app.py rightapi_models.py company_image_page.py clipboard_image.py image_results.py
 git diff --check
 ```
 
 测试覆盖 7 个模型各自的文生图和多图重绘请求、渠道地址、质量限制、
 自动画幅、Gemini URL 解析、终止状态以及公司页面切换。
+连续调整回归测试还覆盖新结果逐轮作为首张参考图、附加图片不会跨轮重复、
+失败保留结果、参考图总数限制、历史版本上限以及跨页面隔离。
 测试替换全部 HTTP 调用，不产生生图费用；此次新版模型未做付费出图验证。
