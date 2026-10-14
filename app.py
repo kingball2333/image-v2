@@ -6,18 +6,28 @@ import time
 from io import BytesIO
 from PIL import Image, ImageOps
 
-from company_image_page import render_company_page
+from company_image_page import get_download_info, render_company_page
 from clipboard_image import remove_pasted_image, render_paste_image_control
+from rightapi_models import (
+    GEMINI_ASPECT_RATIOS,
+    GEMINI_MODELS,
+    GEMINI_SIZE_OPTIONS,
+    MODEL_DESCRIPTIONS,
+    MODEL_OPTIONS,
+    build_image_request,
+    get_quality_options,
+    match_gemini_aspect_ratio,
+)
 
-# Right Code 画图接口现在使用异步任务模式：提交地址带 /draw，查询地址不带 /draw。
-# 保留环境变量覆盖，方便在不同中转站或测试环境中切换。
+# RightAPI 使用异步任务；默认回退地址保留旧 /draw，新模型路由由适配模块选择。
+# 任务查询不带渠道前缀，保留环境变量覆盖以支持不同部署环境。
 API_BASE = os.environ.get("RIGHTAPI_DRAW_BASE_URL", "https://www.rightapi.ai/draw").rstrip("/")
 GENERATIONS_URL = f"{API_BASE}/v1/images/generations"
 TASKS_BASE_URL = os.environ.get(
     "RIGHTAPI_TASKS_BASE_URL",
     "https://www.rightapi.ai/v1/tasks",
 ).rstrip("/")
-POLL_INTERVAL_SECONDS = 2
+POLL_INTERVAL_SECONDS = 3
 POLL_TIMEOUT_SECONDS = 600
 POLL_REQUEST_TIMEOUT_SECONDS = 30
 MIN_PIXELS = 655_360
@@ -28,10 +38,6 @@ EXPERIMENTAL_PIXELS = 2560 * 1440
 MAX_REFERENCE_IMAGES = 16
 REFERENCE_MAX_EDGE = 2048
 REFERENCE_JPEG_QUALITY = 92
-MODEL_OPTIONS = {
-    "GPT Image 2 VIP（原模型）": "gpt-image-2-vip",
-    "GPT Image 2.5（新模型）": "gpt-image-2.5",
-}
 SIZE_OPTIONS = {
     "自动默认": None,
     "方形 1024x1024": "1024x1024",
@@ -40,6 +46,8 @@ SIZE_OPTIONS = {
     "2K 方形 2048x2048（一般不建议）": "2048x2048",
     "2K 横版 2048x1152（一般不建议）": "2048x1152",
     "长海报 720x2160": "720x2160",
+    "4K 横版 3840x2160（实验性大图）": "3840x2160",
+    "4K 竖版 2160x3840（实验性大图）": "2160x3840",
 }
 
 def format_error_message(response):
@@ -95,10 +103,10 @@ def fetch_image_bytes(image_data):
     return img_response.content
 
 
-def generate_image_task(payload, progress_callback=None):
-    """提交异步绘图任务并轮询至完成，返回 Images 兼容的结果 JSON。"""
+def generate_image_task(payload, progress_callback=None, request_url=None):
+    """提交并轮询绘图任务，兼容 OpenAI data 和 Gemini candidates 两类结果。"""
     response = requests.post(
-        GENERATIONS_URL,
+        request_url or GENERATIONS_URL,
         json=payload,
         headers=HEADERS,
         timeout=POLL_REQUEST_TIMEOUT_SECONDS,
@@ -115,10 +123,13 @@ def generate_image_task(payload, progress_callback=None):
     if not isinstance(task_data, dict):
         raise RuntimeError(f"提交绘图任务失败：服务器返回了异常格式。返回内容：{format_error_payload(task_data)}")
 
+    failed_statuses = {"failed", "expired", "canceled"}
+    if task_data.get("status") in failed_statuses:
+        raise RuntimeError(f"提交绘图任务失败：{format_error_payload(task_data)}")
     # 兼容中转站直接返回完成结果的情况。
     task_id = task_data.get("task_id")
     if not task_id:
-        if task_data.get("data"):
+        if "data" in task_data or "candidates" in task_data:
             return task_data
         raise RuntimeError(f"提交绘图任务失败：响应中没有 task_id。返回内容：{format_error_payload(task_data)}")
 
@@ -130,10 +141,10 @@ def generate_image_task(payload, progress_callback=None):
         if progress_callback:
             progress_callback(status or "processing", progress)
 
-        if status == "completed" or task_data.get("data"):
-            return task_data
-        if status == "failed":
+        if status in failed_statuses:
             raise RuntimeError(f"绘图任务失败：{format_error_payload(task_data)}")
+        if status == "completed" or "data" in task_data or "candidates" in task_data:
+            return task_data
         if status and status not in pending_statuses:
             raise RuntimeError(f"绘图任务返回未知状态 {status!r}：{format_error_payload(task_data)}")
 
@@ -156,7 +167,8 @@ def generate_image_task(payload, progress_callback=None):
             raise RuntimeError(f"查询绘图任务失败：服务器返回了异常格式。返回内容：{format_error_payload(task_data)}")
 
     raise TimeoutError(
-        f"绘图任务超过 {POLL_TIMEOUT_SECONDS // 60} 分钟仍未完成，请稍后到中转站检查任务状态。"
+        f"绘图任务超过 {POLL_TIMEOUT_SECONDS // 60} 分钟仍未完成，任务号：{task_id}。"
+        "请到中转站检查任务状态后再重试，以免重复扣费。"
     )
 
 
@@ -170,11 +182,22 @@ def update_task_progress(progress_bar, status_placeholder, status, progress):
 
 
 def get_first_image_data(result):
-    """校验并取出 Images 兼容响应中的第一张图片。"""
+    """统一两种响应：OpenAI data 图片对象，或 Gemini text 中的图片 URL。"""
     data = result.get("data") if isinstance(result, dict) else None
-    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-        raise ValueError("任务已完成，但返回数据中没有可用的图片结果。")
-    return data[0]
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0]
+    candidates = result.get("candidates") if isinstance(result, dict) else None
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            content = candidate.get("content") if isinstance(candidate, dict) else None
+            parts = content.get("parts") if isinstance(content, dict) else None
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                text = part.get("text") if isinstance(part, dict) else None
+                if isinstance(text, str) and text.strip().startswith(("https://", "http://")):
+                    return {"url": text.strip()}
+    raise ValueError("任务已完成，但返回数据中没有可用的图片结果。")
 
 
 def uploaded_file_to_data_url(uploaded_file):
@@ -343,6 +366,21 @@ def is_experimental_size(size):
     return width * height > EXPERIMENTAL_PIXELS
 
 
+def resolve_output_size(size_setting, reference_size=None, gemini=False):
+    """两种生成模式共用尺寸解析；Gemini 用比例，GPT 用像素尺寸。"""
+    if gemini:
+        if size_setting != "自动匹配":
+            return size_setting
+        return match_gemini_aspect_ratio(*reference_size) if reference_size else "1:1"
+    size = SIZE_OPTIONS[size_setting]
+    if size is None:
+        size = normalize_reference_size(*reference_size) if reference_size else "1024x1024"
+    error = validate_image_size(size)
+    if error:
+        raise ValueError(f"当前尺寸 {size} 不符合模型要求：{error}")
+    return size
+
+
 st.set_page_config(
     page_title="AI 绘图助手",
     page_icon="🎨",
@@ -358,7 +396,7 @@ API_KEY = os.environ.get("MY_API_KEY")
 if not API_KEY:
     try:
         API_KEY = st.secrets["MY_API_KEY"]
-    except KeyError:
+    except (KeyError, FileNotFoundError):
         st.error("未找到 API Key，请配置环境变量 MY_API_KEY")
         st.stop()
 
@@ -367,7 +405,7 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-st.title("🎨 AI 绘图助手 Made BY ljj（异步接口版10-08-1）")
+st.title("🎨 AI 绘图助手 Made BY ljj（多模型版10-14）")
 old_page_link, company_page_link = st.columns(2)
 with old_page_link:
     st.button(
@@ -388,9 +426,34 @@ model_choice = st.sidebar.selectbox(
     help="文字生图和图片重绘都使用此处选择的模型。",
 )
 selected_model = MODEL_OPTIONS[model_choice]
+is_gemini = selected_model in GEMINI_MODELS
 st.sidebar.caption(f"当前模型：{selected_model}")
-size_choice = st.sidebar.selectbox("图片尺寸（分辨率越高生成时间越长失败可能性越大哈）", list(SIZE_OPTIONS.keys()), index=0)
-st.sidebar.caption("自动默认：文生图生成 1024x1024 方图；图生图按参考图比例自动修正到模型支持尺寸。")
+st.sidebar.caption(MODEL_DESCRIPTIONS[selected_model])
+quality = "auto"
+image_size_tier = "1K"
+if is_gemini:
+    size_choice = st.sidebar.selectbox(
+        "画幅比例", ["自动匹配", *GEMINI_ASPECT_RATIOS], key="old_gemini_ratio",
+    )
+    image_size_tier = st.sidebar.selectbox(
+        "分辨率档位", GEMINI_SIZE_OPTIONS, key="old_gemini_resolution",
+        help="分辨率越高，耗时与费用通常越高；实际像素尺寸由模型决定。",
+    )
+    st.sidebar.caption("自动匹配：文生图用 1:1；图生图选择最接近第一张参考图的画幅。")
+else:
+    size_choice = st.sidebar.selectbox(
+        "图片尺寸", list(SIZE_OPTIONS.keys()), index=0, key="old_gpt_size",
+        help="分辨率越高，生成时间越长；实验性大图可能更不稳定。",
+    )
+    st.sidebar.caption("自动默认：文生图用 1024x1024；图生图按第一张参考图比例匹配支持的尺寸。")
+    quality_options = get_quality_options(selected_model)
+    if quality_options:
+        quality_choice = st.sidebar.selectbox(
+            "渲染质量", list(quality_options), key=f"old_quality_{selected_model}",
+            help="质量越高，耗时与费用通常越高。建议先用自动或中等质量。",
+        )
+        quality = quality_options[quality_choice]
+st.sidebar.caption("每次生成 1 张；各模型费用不同，请以中转站账号计费为准。")
 
 tab1, tab2 = st.tabs(["📝 文字生图", "🖼️ 图片重绘"])
 
@@ -404,20 +467,17 @@ with tab1:
         else:
             with st.spinner("AI 正在疯狂作画中，请稍候..."):
                 start_time = time.time()  # 记录开始时间
-                image_size = SIZE_OPTIONS[size_choice] or "1024x1024"
-                size_error = validate_image_size(image_size)
-                if size_error:
-                    st.error(f"当前尺寸 {image_size} 不符合模型要求：{size_error}")
+                try:
+                    image_size = resolve_output_size(size_choice, gemini=is_gemini)
+                    request_url, payload = build_image_request(
+                        selected_model, prompt, image_size, quality=quality,
+                        image_size=image_size_tier,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
                     st.stop()
-                if is_experimental_size(image_size):
+                if not is_gemini and is_experimental_size(image_size):
                     st.warning("当前尺寸超过 2560x1440 像素量，属于 experimental 范围，生成可能更慢或不稳定。")
-                payload = {
-                    "model": selected_model,
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": image_size,
-                    "async": True,
-                }
                 progress_bar = st.progress(0)
                 status_placeholder = st.empty()
                 try:
@@ -426,6 +486,7 @@ with tab1:
                         lambda status, progress: update_task_progress(
                             progress_bar, status_placeholder, status, progress
                         ),
+                        request_url=request_url,
                     )
 
                     # 计算耗时
@@ -438,16 +499,18 @@ with tab1:
                     image_data = get_first_image_data(res_data)
                     revised_prompt = image_data.get("revised_prompt", "原样回显（模型未优化）")
                     image_bytes = fetch_image_bytes(image_data)
+                    extension, mime, actual_size, image_format = get_download_info(image_bytes)
 
                     # 【优化】显示成功提示、耗时和优化的提示词
-                    st.success(f"🎉 生成成功！模型 {selected_model}，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 生成成功！模型 {selected_model}，实际尺寸 {actual_size[0]}×{actual_size[1]}，共耗时 {elapsed_time} 秒")
+                    st.caption(f"请求画幅 / 尺寸：{image_size}" + (f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}") + f" · {image_format}")
                     with st.expander("💡 查看 AI 优化后的提示词 (点击展开)", expanded=True):
                         st.info(revised_prompt)
 
                     # 渲染图片
                     st.image(image_bytes, use_container_width=True)
                     st.download_button(label="📥 下载图片", data=image_bytes,
-                                       file_name=f"ai_image_{int(time.time())}.png", mime="image/png")
+                                       file_name=f"ai_image_{int(time.time())}.{extension}", mime=mime)
 
                 except requests.exceptions.Timeout:
                     st.error("❌ 网络请求超时了，请稍后重试。")
@@ -485,6 +548,13 @@ with tab2:
                         st.rerun()
         if len(all_reference_files) > 4:
             st.caption(f"还有 {len(all_reference_files) - 4} 张未预览")
+        if is_gemini and size_choice == "自动匹配":
+            with Image.open(BytesIO(all_reference_files[0].getvalue())) as reference_image:
+                reference_size = ImageOps.exif_transpose(reference_image).size
+            st.caption(
+                f"首张参考图 {reference_size[0]}×{reference_size[1]} → "
+                f"自动画幅 {resolve_output_size(size_choice, reference_size, gemini=True)} · {image_size_tier}"
+            )
 
     edit_prompt = st.text_input("修改指令", placeholder="例如：改成水彩画风")
 
@@ -513,22 +583,19 @@ with tab2:
                     f"参考图已压缩：{format_bytes(original_total_bytes)} -> "
                     f"{format_bytes(compressed_total_bytes)}"
                 )
-                image_size = SIZE_OPTIONS[size_choice] or normalize_reference_size(reference_width, reference_height)
-                size_error = validate_image_size(image_size)
-                if size_error:
-                    st.error(f"当前尺寸 {image_size} 不符合模型要求：{size_error}")
+                try:
+                    image_size = resolve_output_size(
+                        size_choice, (reference_width, reference_height), gemini=is_gemini,
+                    )
+                    request_url, payload = build_image_request(
+                        selected_model, edit_prompt, image_size, image_urls,
+                        quality=quality, image_size=image_size_tier,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
                     st.stop()
-                if is_experimental_size(image_size):
+                if not is_gemini and is_experimental_size(image_size):
                     st.warning("当前尺寸超过 2560x1440 像素量，属于 experimental 范围，生成可能更慢或不稳定。")
-
-                payload = {
-                    "model": selected_model,
-                    "prompt": edit_prompt,
-                    "image": image_urls,
-                    "n": 1,
-                    "size": image_size,
-                    "async": True,
-                }
                 progress_bar = st.progress(0)
                 status_placeholder = st.empty()
                 try:
@@ -537,6 +604,7 @@ with tab2:
                         lambda status, progress: update_task_progress(
                             progress_bar, status_placeholder, status, progress
                         ),
+                        request_url=request_url,
                     )
 
                     end_time = time.time()
@@ -546,11 +614,13 @@ with tab2:
                     status_placeholder.caption("任务状态：completed")
                     image_data = get_first_image_data(res_data)
                     img_bytes = fetch_image_bytes(image_data)
+                    extension, mime, actual_size, image_format = get_download_info(img_bytes)
 
-                    st.success(f"🎉 重绘成功！模型 {selected_model}，参考图 {len(image_urls)} 张，尺寸 {image_size}，共耗时 {elapsed_time} 秒")
+                    st.success(f"🎉 重绘成功！模型 {selected_model}，参考图 {len(image_urls)} 张，实际尺寸 {actual_size[0]}×{actual_size[1]}，共耗时 {elapsed_time} 秒")
+                    st.caption(f"请求画幅 / 尺寸：{image_size}" + (f" · 分辨率档位：{image_size_tier}" if is_gemini else f" · 质量：{quality}") + f" · {image_format}")
                     st.image(img_bytes, use_container_width=True)
                     st.download_button(label="📥 下载重绘后的图片", data=img_bytes,
-                                       file_name=f"edited_image_{int(time.time())}.png", mime="image/png")
+                                       file_name=f"edited_image_{int(time.time())}.{extension}", mime=mime)
 
                 except requests.exceptions.Timeout:
                     st.error("❌ 网络请求超时了，请稍后重试。")
