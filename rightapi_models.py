@@ -72,7 +72,7 @@ def build_image_request(model, prompt, size, reference_images=None, quality="aut
         return f"{base}/v1/images/generations", payload
 
     # 老版 Key 必须携带渠道前缀；绑定新版渠道的 Key 可用环境变量改成统一域名。
-    base = os.environ.get("RIGHTAPI_IMAGE_PRO_BASE_URL", "https://www.rightapi.ai/image-pro").rstrip("/")
+    base = os.environ.get("RIGHTAPI_IMAGE_PRO_BASE_URL", "https://www.rightapi.ai/draw-pro").rstrip("/")
     if model in GEMINI_MODELS:
         if size not in GEMINI_ASPECT_RATIOS or image_size not in GEMINI_SIZE_OPTIONS:
             raise ValueError("Gemini 需要支持的画幅比例，以及 1K、2K 或 4K 分辨率档位。")

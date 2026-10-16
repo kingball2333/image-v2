@@ -48,6 +48,10 @@ class ModelAdapterTests(unittest.TestCase):
             build_image_request("gemini-nano-banana-2.1", "test", "1024x1024")
 
     def test_base_url_overrides_and_legacy_payload(self):
+        environment = {k: v for k, v in os.environ.items() if k != "RIGHTAPI_IMAGE_PRO_BASE_URL"}
+        with patch.dict(os.environ, environment, clear=True):
+            url, _ = build_image_request("gpt-image-2.5-flare", "test", "1024x1024")
+            self.assertEqual(url, "https://www.rightapi.ai/draw-pro/v1/images/generations")
         with patch.dict(os.environ, {
             "RIGHTAPI_DRAW_BASE_URL": "https://legacy.example/draw/",
             "RIGHTAPI_IMAGE_PRO_BASE_URL": "https://new.example/",
@@ -66,7 +70,7 @@ class ImagePageTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {
             "MY_API_KEY": "test-key", "COMPANY_API_KEY": "test-company-key",
             "RIGHTAPI_DRAW_BASE_URL": "https://www.rightapi.ai/draw",
-            "RIGHTAPI_IMAGE_PRO_BASE_URL": "https://www.rightapi.ai/image-pro",
+            "RIGHTAPI_IMAGE_PRO_BASE_URL": "https://www.rightapi.ai/draw-pro",
             "RIGHTAPI_TASKS_BASE_URL": "https://www.rightapi.ai/v1/tasks",
         })
         self.env.start()
@@ -136,7 +140,7 @@ class ImagePageTests(unittest.TestCase):
                         payload = post.call_args.kwargs["json"]
                         self.assertIs(payload["async"], True)
                         if current_model in GEMINI_MODELS:
-                            self.assertEqual(url, f"https://www.rightapi.ai/image-pro/v1beta/models/{current_model}:generateContent")
+                            self.assertEqual(url, f"https://www.rightapi.ai/draw-pro/v1beta/models/{current_model}:generateContent")
                             config = payload["generationConfig"]["imageConfig"]
                             self.assertEqual(config, {"aspectRatio": "2:3" if edit else "1:1", "imageSize": "2K"})
                             parts = payload["contents"][0]["parts"]
@@ -146,7 +150,7 @@ class ImagePageTests(unittest.TestCase):
                                 self.assertNotIn("data:image", parts[1]["inline_data"]["data"])
                         else:
                             self.assertEqual(payload["model"], current_model)
-                            prefix = "draw" if current_model in LEGACY_MODELS else "image-pro"
+                            prefix = "draw" if current_model in LEGACY_MODELS else "draw-pro"
                             path = "edits" if edit and current_model not in LEGACY_MODELS else "generations"
                             self.assertEqual(url, f"https://www.rightapi.ai/{prefix}/v1/images/{path}")
                             self.assertEqual(payload["size"], "1024x1536" if edit else "1024x1024")
